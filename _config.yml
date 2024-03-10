@@ -26,7 +26,7 @@ kramdown:
 
 # Site owner
 owner:
-  name: Hoang Anh Hiep(Tony)
+  name: hiepbk
   avatar: avatar_large.jpeg
   # bio: "Describe your self."
   email: hiepbk.97@gmail.com
@@ -38,10 +38,10 @@ owner:
     ad-client: 
     ad-slot: 
   bing-verify: 
-  github: xharlie
-  stackoverflow: #http://stackoverflow.com/users/123456/username
+  github: hiepbk
+  stackoverflow: https://stackoverflow.com/users/19740792/anh-hiep-hoang
   linkedin: hiepbk97
-  instagram: hiepbk97
+  instagram: hiepbk_97
   xing: #username
   lastfm: #username
   tumblr: #username
