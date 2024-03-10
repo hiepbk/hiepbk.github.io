@@ -27,11 +27,11 @@ image:
 
 I am interested in many different aspects of Computer Vision:
 
-- Large-scale representation learning of 3D Point Cloud
-- Instance Segmentation and Object Detection of 3D Point Cloud
-- Generative model in video (Frame Prediction and Interpolation).
-- Representation learning and feature disentanglement
-- Statistical Learning
+- Large-scale representation learning of 3D Point Cloud.
+- Instance Segmentation and Object Detection of 3D Point Cloud.
+- Simultaneous Localization and Mapping (SLAM).
+- 3D Depth Estimation.
+- 3D Object Tracking.
 
 
 ## Current Projects
