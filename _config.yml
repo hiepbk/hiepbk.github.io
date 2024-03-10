@@ -27,7 +27,7 @@ kramdown:
 # Site owner
 owner:
   name: hiepbk
-  avatar: avatar_large.jpeg
+  avatar: avatar.jpeg
   # bio: "Describe your self."
   email: hiepbk.97@gmail.com
   disqus-shortname: 
@@ -39,7 +39,7 @@ owner:
     ad-slot: 
   bing-verify: 
   github: hiepbk
-  stackoverflow: https://stackoverflow.com/users/19740792/anh-hiep-hoang
+  stackoverflow: anh-hiep-hoang
   linkedin: hiepbk97
   instagram: hiepbk_97
   xing: #username
