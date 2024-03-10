@@ -1,0 +1,16 @@
+# site navigation links
+
+- title: About
+  url: /"/"/
+
+- title: Projects
+  url: /projects/
+
+- title: Publications
+  url: /publications/
+
+- title: Teaching
+  url: /teaching/
+
+#- title: CV
+#  url: /cv/
