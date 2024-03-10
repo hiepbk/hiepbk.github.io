@@ -7,7 +7,7 @@ image:
   feature:
 ---
 
-I am Hoang Anh Hiep (Tony), an AI researcher at DeltaX. Previously, I obtained my Master of Science degree (2022 - 2024) from the Information Communication Convergence Technology of Soongsil University Department, Seoul, South Korea, supervised by Professor <a href="https://scholar.google.com/citations?user=TARMZOsAAAAJ&hl=vi&oi=ao/" target="_blank"><font color="brown">Myungsik Yoo</font></a>. 
+I am Hoang Anh Hiep (Tony), an AI researcher at <a href="http://deltax.ai/renewal/eng/" target="_blank"><font color="brown">DeltaX</font></a>. Previously, I obtained my Master of Science degree (2022 - 2024) from the Information Communication Convergence Technology of Soongsil University Department, Seoul, South Korea, supervised by Professor <a href="https://scholar.google.com/citations?user=TARMZOsAAAAJ&hl=vi&oi=ao/" target="_blank"><font color="brown">Myungsik Yoo</font></a>. 
 
 
 My research interests and experiences range from Deep Learning, 3D Perception, 3D scene understanding and reconstruction, Point Cloud and Robotics. I also like to explore meta-learning, constrastive learning, information bottle neck theory and novel learning schemes.  
