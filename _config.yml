@@ -26,10 +26,10 @@ kramdown:
 
 # Site owner
 owner:
-  name: Qiangeng(Charlie) Xu
+  name: Hoang Anh Hiep(Tony)
   avatar: avatar_large.jpeg
   # bio: "Describe your self."
-  email: charlie.learning@yahoo.com
+  email: hiepbk.97@gmail.com
   disqus-shortname: 
   google:
     plus: #username
@@ -40,8 +40,8 @@ owner:
   bing-verify: 
   github: xharlie
   stackoverflow: #http://stackoverflow.com/users/123456/username
-  linkedin: qiangeng-charlie-xu-6789b857
-  instagram: youlikecharlieorwhat
+  linkedin: hiepbk97
+  instagram: hiepbk97
   xing: #username
   lastfm: #username
   tumblr: #username
