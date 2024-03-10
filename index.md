@@ -15,5 +15,5 @@ My research interests and experiences range from Deep Learning, 3D Perception, 3
 Previously I got my B.E. in Control Engineering from Hanoi University of Science and Technology, Vietnam. During my undergraduate study, I had great honor to work with Professor <a href="https://sites.usc.edu/quann/" target="_blank"><font color="brown">Quan Nguyen</font></a>, University of Southern California, USA, as a remote internship student in robotics. 
 
 
-Feel free to reach out if you are interested in working with us as either full time or intern (term is flexible, summer, spring or fall), or if you are simply interested in collaboration! Find me at hiepbk dot 97 at gmail dot com
+Feel free to reach out if you are interested in working with us as either full time or intern (term is flexible, summer, spring or fall), or if you are simply interested in collaboration! Find me at hiepbk dot 97 at gmail dot com.
 
