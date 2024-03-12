@@ -28,79 +28,40 @@ image:
 I am interested in many different aspects of Computer Vision:
 
 - Large-scale representation learning of 3D Point Cloud.
-- Instance Segmentation and Object Detection of 3D Point Cloud.
-- Simultaneous Localization and Mapping (SLAM).
-- 3D Depth Estimation.
-- 3D Object Tracking.
+- 3D Object Detection and Tracking of Point Cloud.
+- Simultaneous Localization and Mapping (SLAM) and Depth Estimation.
+- Quadruped Robot Optimization.
 
 
-## Current Projects
+## On-going Projects
 
-### Object Detection in Point Cloud
+### 3D Depth Estimation.
+### Simultaneous Localization and Mapping (SLAM).
 
 ## Previous Projects
 
-### 3D Reconstruction from a Single Image
-High quality single view 3D reconstruction by using implicit function and local features. Please refer to our publication
-\[[<font color="brown">project site</font>](https://xharlie.github.io/publications/){:target="blank"}\]
-![](../images/DISN_teaser.png)
+### 3D Object Detection based on Spatial Shape Transformer
+A high-performance 3D Object detection framwork using point cloud based on Transformer achitecture. This framework provides a comprehensive understanding of an object’s dimensions, rotations, and spatial relationships with its surroundings. Please refer to our publication
+\[[<font color="brown">paper</font>](https://ieeexplore.ieee.org/abstract/document/10399338/){:target="blank"}\]
+![](../images/TSSTDET_abstract.png)
 
-### Fast Adaptive Meta-Learning based branching for Mixed Interger Programming
-We propose a meta-learning framework for variable selection in the branch-and-bound algorithm of Mixed Integer Programming(MIP).
-With the meta-learning methodology, we train our base model with samples from various MIP problems to mimic the general variable selection behavior of Strong Branching (SB). At the same time, the base model can also adaptively mimic the behavior of SB for a specific MIP instance, and easily get updated based on the current
-state once for a while during the branch-and-bound search. Experiments on benchmark instances indicate that our model is able to produce more accurate variable ranking than the state-of-the-art
-method using SVM ranking[Khalil et al., 2016], even trained with fewer online training sample.
+### 3D Detector for Occluded Object under Obstructed Conditions
+We propose a deep learning framework for reconstructing the occluded object. With the encoder-decoder methodology, our model ability to perceive and understand 3-D space under obstructed conditions. Leveraging the advantages of the point-voxel-based method, the model generates the high-quality 3D bounding box while preserving detailed object shape context. Please refer to our publication
+\[[<font color="brown">paper</font>](https://ieeexplore.ieee.org/abstract/document/10399338/){:target="blank"}\]
+![](../images/3ONET_abstract.png)
 
-MAML  |   Initial Result           
-:-------------------------:|:-------------------------:
-![](../images/meta_learning.png){:width="100%"}   |  ![](../images/rank_chart.png){:width="180%"} 
+### Improving Object Shape of 3D Detector
+We propose a method for enhancing object shape for 3D detector. Please refer to our publication
+\[[<font color="brown">paper</font>](https://icoin.org/media?key=site/icoin2024/abs/P-3-2.pdf){:target="blank"}\]
 
-<!-- 
-### Core 3D
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; The goal of this project is to construct 3D building models from large-scale satellite DEM and point cloud. The point cloud covers several regions of different geographical locations.
-I have: 
-•	Used concepts of principal direction to rectify the building 2D contour after planar RANSAC.
-•	Simplified, merged and aligned the edges according to the proximity in Hough space.
-•	Clustered the plane’s norm direction using DBSCAN and adjusted them to conventional angles. 
+![](../images/ESSDET_model.png)
 
-Motivaton  |   single building result           
-:-------------------------:|:-------------------------:
-![](../images/core_3d_motivation.jpg){:width="80%"}   |  ![](../images/core_3d_yazu.png){:width="180%"}  -->
+### Jumping optimization for quadruped robot.
+We propose a method for optimizing the jump trajectory of quadruped robot using spatial v2. Please refer to our source
+\[[<font color="brown">matlab source</font>](https://github.com/hiepbk/Quadruped_Robot_A1_Matlab){:target="blank"}\]
 
-<br>
+\[[<font color="brown">ros source</font>](https://github.com/hiepbk/Quadruped_Robot_A1_ROS_Gazebo){:target="blank"}\]
 
-### Stochastic Dynamics for Video Infilling \[[<font color="brown">paper</font>](https://arxiv.org/abs/1809.00263){:target="blank"}\] \[[<font color="brown">project site</font>](../projects/project_sites/SDVI/video_results.html){:target="blank"}\] 
+![](../images/robot_matlab.gif) ![](../images/robot_ros.gif)
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; We introduce a stochastic generation framework (SDVI) to infill long intervals in video sequences. SDVI consists of two parts: (1) a bi-directional constraint propagation
-to guarantee the spatial-temporal coherency among frames, (2) a stochastic sampling process to generate dynamics from the inferred distributions. Experimental results show that SDVI can generate clear and varied sequences.
 
-Motivation |   Model           
-:-------------------------:|:-------------------------:
-![](../images/stochastic_motivation.jpg){:width="90%"}  |  ![](../images/stochastic_training.jpg)
-
-<br>
-
-### Variation Disentanglement Siamese Net \[[<font color="brown">project site</font>](https://github.com/Xharlie/Project-Site-Variation-Disentanglement-Siamese-Net){:target="blank"}\]  \[[<font color="brown">code</font>](https://github.com/Xharlie/Variation-Disentanglement-Siamese-Net){:target="blank"}\]
-
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; A project to study unsupervised disintanglement of image representation: Supervised by Prof. Shih-Fu Chang:
--	Designed a semi-supervised network that disentangles the label-related and variance representation of a manifold.
--   Introduced a Shannon-Entropy based adversarial training counterpart to help the disentanglement, expelling any label-related information from the variance representation.
--   Setting recognition and reconstruction task to keep the richness in the feature embedding.
--	Implemented the proposed network and conducted the experiment on both MNIST and CASIA Face dataset. Conducted disentanglement, reconstruction, cross-stich evaluation and TSNE Clustering on learnt representation.
-
-Model            |  Feature space interpolation  | Feature space clustering
-:-------------------------:|:-------------------------:|:-------------------------:
-![](../images/vdsn_model.png)  |  ![](../images/vdsn_interpolation.png){:class="third" id="columns"} | ![](../images/vdsn_clustering.png)
-
-<br>
-
-### Neural Gesture (Funded by NSF) \[[<font color="brown">paper</font>](https://arxiv.org/abs/1712.09709){:target="blank"}\] \[[<font color="brown">code</font>](https://github.com/Xharlie/Eye-movement-similarity-clustering){:target="blank"}\] 
-
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; The project is leaded by Prof. John Kender, studying relationship between gestures of speakers and audiences’ attention. I have: 
--	Design and implemented distance matching algorithm based on “Time Warp Edit Distance” between every pair of eye tracking trajectories to get a eye-tracking distance matrix.
--	Fine-tuned the hyper-parameter of TWED based algorithm by comparing eye movement trails.
--	Clustered subjects based on “fast multi-scale detection of relevant communities” by using the distance matrix.
-
-Attention fixation            |  Eye trajectory and co-relation  
-:-------------------------:|:-------------------------:|:-------------------------:
-![](../images/neural_gesture_fixation.png){:width="80%"}  |  ![](../images/neural_gesture_trajectory.png){:width="100%"} 
