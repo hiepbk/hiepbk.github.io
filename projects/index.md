@@ -25,7 +25,7 @@ image:
 
 ## Research Interests
 
-I am interested in many different aspects of Computer Vision:
+I am interested in many different aspects of Computer Vision and Robotics:
 
 - Large-scale representation learning of 3D Point Cloud.
 - 3D Object Detection and Tracking of Point Cloud.
