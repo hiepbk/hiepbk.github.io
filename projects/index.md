@@ -48,7 +48,7 @@ A high-performance 3D Object detection framwork using point cloud based on Trans
 ### 3D Detector for Occluded Object under Obstructed Conditions
 We propose a deep learning framework for reconstructing the occluded object. With the encoder-decoder methodology, our model ability to perceive and understand 3-D space under obstructed conditions. Leveraging the advantages of the point-voxel-based method, the model generates the high-quality 3D bounding box while preserving detailed object shape context. Please refer to our publication
 \[[<font color="brown">paper</font>](https://ieeexplore.ieee.org/abstract/document/10399338/){:target="blank"}\]
-![](../images/3ONET_abstract.png)
+![](../images/3ONet_abstract.png)
 
 ### Improving Object Shape of 3D Detector
 We propose a method for enhancing object shape for 3D detector. Please refer to our publication
