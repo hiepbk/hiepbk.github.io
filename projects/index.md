@@ -58,9 +58,7 @@ We propose a method for enhancing object shape for 3D detector. Please refer to 
 
 ### Jumping optimization for quadruped robot.
 We propose a method for optimizing the jump trajectory of quadruped robot using spatial v2. Please refer to our source
-\[[<font color="brown">matlab source</font>](https://github.com/hiepbk/Quadruped_Robot_A1_Matlab){:target="blank"}\]
-
-\[[<font color="brown">ros source</font>](https://github.com/hiepbk/Quadruped_Robot_A1_ROS_Gazebo){:target="blank"}\]
+\[[<font color="brown">matlab source</font>](https://github.com/hiepbk/Quadruped_Robot_A1_Matlab){:target="blank"}\] | \[[<font color="brown">ros source</font>](https://github.com/hiepbk/Quadruped_Robot_A1_ROS_Gazebo){:target="blank"}\]
 
 ![](../images/robot_matlab.gif) ![](../images/robot_ros.gif)
 
