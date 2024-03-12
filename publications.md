@@ -29,7 +29,7 @@ image:
 ## 2022
 * Contact-timing and Trajectory Optimization for 3D Jumping on Quadruped Robots
 <b>Chuong Nguyen&#10036;</b>, Quan Nguyen
-<em>IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS 2022)</em>  \[[<font color="brown">paper</font>](https://ieeexplore.ieee.org/abstract/document/9981284){:target="blank"}\]. (I am not the author of this paper. However, during my internship at the Dynamic Robotics and Control Lab, I assisted Chuong Nguyen in simulation and hardware experimentation. I would like to express my gratitude to Chuong Nguyen and Prof. Quan Nguyen for their guidance and for acknowledging my contribution in the acknowledgments section).
+<em>IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS 2022) (I am not the author of this paper. However, during my internship at the Dynamic Robotics and Control Lab, I assisted Chuong Nguyen in simulation and hardware experimentation. I would like to express my gratitude to Chuong Nguyen and Prof. Quan Nguyen for their guidance and for acknowledging my contribution in the acknowledgments section) </em>  \[[<font color="brown">paper</font>](https://ieeexplore.ieee.org/abstract/document/9981284){:target="blank"}\]
 
 
 
