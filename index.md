@@ -12,7 +12,7 @@ I am Hoang Anh Hiep (Tony), an AI researcher at <a href="http://deltax.ai/renewa
 
 My research interests and experiences range from deep learning, 3D perception, 3D scene understanding and reconstruction and robotics. I also like to explore meta-learning, constrastive learning, information bottle neck theory and novel learning schemes.  
 <br />
-Previously, I got my B.E. in Control Engineering from Hanoi University of Science and Technology, Vietnam. During my undergraduate study, I had great honor to work with Professor <a href="https://sites.usc.edu/quann/" target="_blank"><font color="brown">Quan Nguyen</font></a>, University of Southern California, USA, as a remote internship student in robotics. 
+In 2020, I got my B.E. in Control Engineering from Hanoi University of Science and Technology, Vietnam. During my undergraduate study, I had great honor to work with Professor <a href="https://sites.usc.edu/quann/" target="_blank"><font color="brown">Quan Nguyen</font></a>, University of Southern California, USA, as a remote internship student in robotics. 
 
 
 Feel free to reach out if you are interested in working with us as either full time or intern (term is flexible, summer, spring or fall), or if you are simply interested in collaboration! Find me at hiepbk dot 97 at gmail dot com.
