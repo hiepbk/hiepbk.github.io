@@ -16,6 +16,12 @@ image:
 * ESSDet: Enhancing Spatial Shape for 3-D Object Detection
 <b>Hiep Anh Hoang&#10036;</b>, Myungsik Yoo
 <em>International Conference on Information Networking (ICOIN 2024)</em>  \[[<font color="brown">paper</font>](https://icoin.org/media?key=site/icoin20){:target="blank"}\]
+* CAMTrack: a combined appearance-motion method for multiple-object tracking
+Duy Cuong Bui, <b>Hiep Anh Hoang&#10036;</b>, Myungsik Yoo
+<em>Machine Vision and Application</em>  \[[<font color="brown">paper</font>](https://icoin.org/media?key=site/icoin20){:target="blank"}\]
+* AFMtrack: Attention-based Feature Matching for Multiple Object Tracking
+Duy Cuong Bui, <b>Hiep Anh Hoang&#10036;</b>, Myungsik Yoo
+<em>IEEE Access</em>  \[[<font color="brown">paper</font>](https://icoin.org/media?key=site/icoin20){:target="blank"}\]
 
 ## 2023
 * 3ONet: 3D Detector for Occluded Object under Obstructed Conditions
