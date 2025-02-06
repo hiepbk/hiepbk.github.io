@@ -21,7 +21,7 @@ Duy Cuong Bui, Ngan Linh Nguyen, <b>Hiep Anh Hoang&#10036;</b>, Myungsik Yoo
 <em>Machine Vision and Application</em>  \[[<font color="brown">paper</font>](https://link.springer.com/article/10.1007/s00138-024-01548-w){:target="blank"}\]
 * AFMtrack: Attention-based Feature Matching for Multiple Object Tracking
 Duy Cuong Bui, <b>Hiep Anh Hoang&#10036;</b>, Myungsik Yoo
-<em>IEEE Access</em>  \[[<font color="brown">paper</font>]https://ieeexplore.ieee.org/abstract/document/10552256/){:target="blank"}\]
+<em>IEEE Access</em>  \[[<font color="brown">paper</font>](https://ieeexplore.ieee.org/abstract/document/10552256/){:target="blank"}\]
 
 ## 2023
 * 3ONet: 3D Detector for Occluded Object under Obstructed Conditions
