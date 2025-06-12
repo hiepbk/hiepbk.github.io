@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Understanding Voxelization in 3D Computer Vision"
+title: "Understanding "
 date: 2024-06-12
 excerpt: "A comprehensive guide to voxelization techniques and their applications in 3D understanding"
 tags: [voxelization, 3D vision, point clouds, deep learning]
@@ -15,7 +15,7 @@ Voxelization is a fundamental technique in 3D computer vision that transforms co
 
 A voxel (volumetric pixel) is the 3D equivalent of a 2D pixel. Voxelization is the process of converting 3D objects or point clouds into a regular grid of voxels. Think of it as dividing 3D space into small cubes, where each cube (voxel) may contain information about the object occupying that space.
 
-![Voxelization Process](/images/blog/voxelization_example.png)
+![Voxelization Process](/images/blog/voxelization/voxelization_1.png)
 
 ## Why Use Voxelization?
 
@@ -90,7 +90,7 @@ Voxelization is widely used in 3D object detection and segmentation pipelines:
 
 3. **PointPillars**: Uses a specialized form of voxelization where points are grouped into vertical columns (pillars).
 
-![3D Object Detection with Voxels](/images/blog/voxel_detection.png)
+![3D Object Detection with Voxels](/images/blog/voxelization/voxelization_2.png)
 
 ## Sparse Voxel Representations
 
