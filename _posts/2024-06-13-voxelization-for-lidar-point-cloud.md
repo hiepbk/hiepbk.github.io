@@ -7,8 +7,6 @@ tags: [voxelization, 3D vision, point clouds, deep learning, autonomous driving]
 comments: true
 ---
 
-# Voxelization: Giải pháp hiệu quả cho xử lý dữ liệu Point Cloud trong xe tự lái
-
 ## Cảm biến LiDAR và Point Cloud trong xe tự lái
 
 Trong lĩnh vực xe tự lái, cảm biến LiDAR (Light Detection And Ranging) đóng vai trò vô cùng quan trọng. LiDAR hoạt động bằng cách phát ra các tia laser và đo thời gian phản xạ để tạo ra bản đồ 3D chi tiết về môi trường xung quanh. Kết quả thu được là một đám mây điểm 3D (point cloud) - tập hợp hàng nghìn hoặc hàng triệu điểm trong không gian 3D, mỗi điểm chứa thông tin về vị trí (x, y, z) và đôi khi là cường độ phản xạ (intensity).
@@ -42,17 +40,27 @@ Các mô hình như PointNet, PointNet++ xử lý trực tiếp trên dữ liệ
 - Xử lý chậm với số lượng điểm lớn
 - Khó khăn trong việc trích xuất thông tin cục bộ
 - Tốn nhiều tài nguyên tính toán
+Lợi ích duy nhất của phương pháp này là deep learning network không bị phụ thuộc vào số lượng point đầu vào, có nghĩa rằng dữ liệu không cần tiền xử lý, mạng có thể học với số lượng điểm thay đổi.
 
 ### 2. Phương pháp dựa trên Voxel-based
 
-Để khắc phục hạn chế của phương pháp point-based, voxel-based được phát triển. Các mô hình như VoxelNet, SECOND, và PointPillars chuyển đổi point cloud thành cấu trúc voxel (lưới 3D) và áp dụng mạng nơ-ron tích chập 3D.
+Các phương pháp dựa trên Voxel-based xuất phát từ ý tuởng tương tự như 2D Object Detection. Sử dụng mạng CNN để trượt qua các vùng recceiptive filed, trích xuất đặc trưng cục bộ từ những vùng này, tạo ra những feature map với kích thước nhỏ hơn và có chiều sâu hơn. Các phương pháp sử dụng voxel-based tận dụng được concept khả năng tính toán của mạng CNN khi có thể trích xuất đặc trưng rất tốt cho các bài toán object detection, segmentation. Tuy nhiên, dữ liệu đầu vào point cloud 
 
-## Tại sao cần Voxelization cho Point Cloud?
-
+## Tại sao cần Voxelization cho Point cloud
 
 Voxelization là quá trình chuyển đổi point cloud thành lưới 3D gồm các voxel (khối 3D, tương tự như pixel trong không gian 2D). 
 Đối với 1 ảnh 2D, một cách tự nhiên chúng ta đã biết trước độ rộng và cao (W, H) của một ảnh, cũng như đơn vị nhỏ nhất (unit) là 1 pixel.
-Điều này là rất cơ bản để 1 kernel trong 2D convolution có thể biết chúng có thể "trượt" tới giới hạn nào (boundary), cũng như bước nhảy (stride) là bao nhiêu. Về cơ bản, dữ liệu ảnh 2D là có cấu trúc (về mặt không gian), ngược lại đối với point cloud, đây là một dạng dữ liệu phi cấu trúc (về mặt không gian). 
+Thông tin này là bắt buộc cho một đầu vào dữ liệu để 1 kernel trong 2D convolution có thể biết chúng có thể "trượt" tới giới hạn nào (boundary), cũng như bước nhảy (stride) là bao nhiêu. 
+
+
+Về cơ bản, dữ liệu ảnh 2D là có cấu trúc (về mặt không gian), khi đã được định nghĩa trước về giới hạn và bước nhảy. 
+
+
+Ngược lại đối với point cloud thu thập từ lidar, đây là một dạng dữ liệu phi cấu trúc (về mặt không gian). Ví dụ, một điểm trong không gian được lưu dưới tọa độ (50.00012, 12.9230940234, 3.0) -> trong hệ tọa độ Decars tương ứng x =50.00012 meters, y =12.9230940234, z= 3.0 , điêm tiếp theo (50.1, 12.3, 3),... vậy đâu là đơn vị nhỏ nhất để 1 kernel có thể trượt? 1cm, 1mm hay 1nm.
+
+Điều này giải thích cho việc lidar point cloud là một dạng dữ liệu phi cấu trúc trong không gian. Điều này khiến chúng ta không thể đưa dữ liệu này vào mạng tích chập
+
+
 
 Tóm lại, lợi ích của voxelization
 
