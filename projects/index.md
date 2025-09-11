@@ -38,7 +38,7 @@ I am interested in many different aspects of Computer Vision and Robotics:
 ### 3D Depth Estimation.
 ### Simultaneous Localization and Mapping (SLAM).
 
-## Previous Projects
+## Academia Research Project
 
 ### 3D Object Detection based on Spatial Shape Transformer
 A high-performance 3D Object detection framwork using point cloud based on Transformer achitecture. This framework provides a comprehensive understanding of an object’s dimensions, rotations, and spatial relationships with its surroundings. Please refer to our publication
