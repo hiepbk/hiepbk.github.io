@@ -1,99 +1,194 @@
 ---
 layout: page
 title: Projects
-excerpt: "A page describing my research (interests)"
-tags: [Jekyll, theme, responsive, blog, template]
-image:
-
+excerpt: "Showcasing innovative projects in Computer Vision, Robotics, and Deep Learning."
+tags: [Jekyll, theme, responsive, portfolio]
+image: 
 ---
+
+<style>
+  /* Custom styles for project cards */
+  .project-cards {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-around;
+    margin: 2em 0;
+  }
+  .project-card {
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    margin: 1em;
+    flex: 1 1 300px;
+    max-width: 320px;
+    transition: transform 0.2s;
+    overflow: hidden;
+  }
+  .project-card:hover {
+    transform: scale(1.03);
+  }
+  .project-card img {
+    width: 100%;
+    height: auto;
+  }
+  .project-card .card-content {
+    padding: 1em;
+  }
+  .project-card h3 {
+    margin-top: 0;
+    font-size: 1.25em;
+  }
+  .project-card p {
+    font-size: 0.95em;
+    line-height: 1.4em;
+  }
+  .project-card .icon {
+    margin-right: 0.5em;
+    color: #007acc;
+  }
+</style>
 
 {% include _toc.html %}
 
-<style>
-   #columns {
-        float: left;
-   }
-
-   #columns .half {
-       width: 50%;
-   }
-
-   #columns .third {
-       width: 33%;
-   }
-</style>
-
 ## Research Interests
 
-I am interested in many different aspects of Computer Vision and Robotics:
+I am passionate about various aspects of Computer Vision and Robotics, including:
 
-- 2D/3D Object Detection
-- 2D/3D Object Tracking
-- Point Cloud Reconstruction
-- 2D/3D Panoptic Segmentation
-- 2D/3D Semantic/Instance Segmentation 
+- <i class="fa fa-cube"></i> **2D/3D Object Detection & Tracking**
+- <i class="fa fa-th"></i> **Panoptic & Semantic Segmentation**
+- <i class="fa fa-cloud"></i> **Point Cloud Reconstruction**
 
+---
 
 ## Production Projects
 
-### ADAS 3D Object Detection
-1. An end-to-end 3D Object Detector using lidar only run on a HPC, display realtime with predicted bbox and raw sequence point cloud, can run with 12+ FPS and AP> 85 for Car, Truck, etc classes.
-- Multi-threaded Architecture: Independent data loading, inference, post-processing, and visualization threads.
-- Real-time Visualization: build toolbox of 3D point cloud rendering with Open3D.
-- FPS tracking and bottleneck analysis.
-- Flexible Display: Support for point clouds, voxels, and bounding box visualization
+<div class="project-cards">
 
-![3D Object Detection Point Cloud only HPC](../images/project//FocalFormer3D_crop.gif)
+  <!-- Project 1: 3D Object Detection -->
+  <div class="project-card">
+    <img src="../images/project/FocalFormer3D_crop.gif" alt="[ADAS] 3D Object Detection">
+    <div class="card-content">
+      <h3><i class="fa fa-car icon"></i>[ADAS] 3D Object Detection</h3>
+      <p>
+        <strong>Key Features:</strong><br>
+        • End-to-end LiDAR-based detector<br>
+        • Real-time visualization with predicted bounding boxes<br>
+        • Multi-threaded pipeline for data loading, inference, and display
+      </p>
+    </div>
+  </div>
 
+  <!-- Project 2: 3D Object Detection & SORT Tracking -->
+  <div class="project-card">
+    <img src="../images/project/jetson_3d_detection_tracking.gif" alt="[ADAS] 3D Object Detection Tracking">
+    <div class="card-content">
+      <h3><i class="fa fa-lightbulb-o icon"></i>[ADAS] 3D Object Detection & Tracking</h3>
+      <p>
+        <strong>Key Features:</strong><br>
+        • Fusion of LiDAR and camera data<br>
+        • High-performance detection on edge devices<br>
+        • Real-time SORT tracking with remote monitoring via websockets
+      </p>
+    </div>
+  </div>
 
+  <!-- Project 3: 3D Point Cloud Scene Reconstruction -->
+  <div class="project-card">
+    <img src="../images/project/pc_recon.png" alt="[ADAS] 3D Point Cloud Scene Reconstruction">
+    <div class="card-content">
+      <h3><i class="fa fa-picture-o icon"></i>[ADAS] 3D Point Cloud Scene Reconstruction</h3>
+      <p>
+        <strong>Key Features:</strong><br>
+        • Unified interface for multi-dataset support (NuScenes, DDAD, KITTI)<br>
+        • Self-supervised learning without ground truth depth<br>
+        • Integrated 3D visualization with CamViz
+      </p>
+    </div>
+  </div>
 
-2. An end-to-end 3D Object Detector and SORT tracking method using lidar-camera (6-8 cams), run on a Jetson edge-device, display realtime support bbox mode or 3D model mode base on leightweight Godot front end.
-- Lighweight c++ pipeline and quantized INT8 inference model.
-- Tiny Lidar-Camera Backbone inference engine independent of TensorRT.
-- Real-time 3D visualization at 60+ FPS with GPU instancing and Smart Object Pooling using Godot framework.
-- Simple and Online Realtime Tracking (SORT) method based on detection model
-- Multi-device streaming for remote monitoring, websocket communication.
+  <!-- Project 4: 2D Panoptic / Semantic / Instance Segmentation -->
+  <div class="project-card">
+    <img src="../images/project/pan_seg.gif" alt="[ADAS] 2D Panoptic Segmentation">
+    <div class="card-content">
+      <h3><i class="fa fa-desktop icon"></i>[ADAS] 2D Panoptic Segmentation</h3>
+      <p>
+        <strong>Key Features:</strong><br>
+        • Real-time inference on PC and edge devices<br>
+        • Multi-threaded architecture with teacher-student distillation<br>
+        • Prototype web app built with Gradio
+      </p>
+    </div>
+  </div>
 
-![3D Object Detection Tracking Jetson Godot](../images/project//jetson_3d_detection_tracking.gif) 
-![3D Object Detection Tracking Jetson Image](../images/project//receiver_jetson_crop.gif)
+  <!-- Project 5: 2D Object Detection -->
+  <div class="project-card">
+    <img src="../images/project/3d_od.gif" alt="[ADAS] 2D Object Detection">
+    <div class="card-content">
+      <h3><i class="fa fa-eye icon"></i>[ADAS] 2D Object Detection</h3>
+      <p>
+        <strong>Key Features:</strong><br>
+        • Fast, lightweight model on Jetson edge devices<br>
+        • Real-time display with minimal latency<br>
+        • Optimized for web prototyping with Gradio
+      </p>
+    </div>
+  </div>
 
-### ADAS Point Cloud Scene Reconstruction
+</div>
 
-A 3D point cloud reconstructon method from multi-view camera input only
-- Multi-Dataset Support: NuScenes, DDAD, KITTI with unified interface
-- Self-Supervised Learning: No ground truth depth required for training
-- Multi-View Geometry: Leverages temporal consistency across frames
-- Visualization Tools: Integrated CamViz for 3D pointcloud visualization
+## Academia Research Projects
 
+<div class="project-cards">
 
-![ADAS Point Cloud Scene Reconstruction](../images/project/pc_recon.png)
-![ADAS Point Cloud Scene Reconstruction](../images/project/pc_recon2.png)
-![ADAS Point Cloud Scene Reconstruction](../images/project/pc_recon4.png)
+  <!-- Academic Project 1 -->
+  <div class="project-card">
+    <img src="../images/TSSTDET_abstract.png" alt="3D Object Detection with Spatial Shape Transformer">
+    <div class="card-content">
+      <h3><i class="fa fa-graduation-cap icon"></i>3D Object Detection with Spatial Shape Transformer</h3>
+      <p>
+        A high-performance 3D detector using Transformer architecture, offering a deep understanding of object dimensions and spatial relationships.
+        <br><a href="https://ieeexplore.ieee.org/abstract/document/10399338/" target="_blank">[Paper]</a>
+      </p>
+    </div>
+  </div>
 
-## Academia Research Project
+  <!-- Academic Project 2 -->
+  <div class="project-card">
+    <img src="../images/3ONet_abstract.png" alt="3D Detector for Occluded Object">
+    <div class="card-content">
+      <h3><i class="fa fa-graduation-cap icon"></i>3D Detector for Occluded Object</h3>
+      <p>
+        Utilizing a point-voxel based method, the framework produces high-quality 3D bounding boxes while preserving shape context.
+        <br><a href="https://ieeexplore.ieee.org/abstract/document/10399338/" target="_blank">[Paper]</a>
+      </p>
+    </div>
+  </div>
 
-### 3D Object Detection based on Spatial Shape Transformer
-A high-performance 3D Object detection framwork using point cloud based on Transformer achitecture. This framework provides a comprehensive understanding of an object’s dimensions, rotations, and spatial relationships with its surroundings. Please refer to our publication
-\[[<font color="brown">paper</font>](https://ieeexplore.ieee.org/abstract/document/10399338/){:target="blank"}\]
-![](../images/TSSTDET_abstract.png)
+  <!-- Academic Project 3 -->
+  <div class="project-card">
+    <img src="../images/ESSDET_model.png" alt="Improving Object Shape of 3D Detector">
+    <div class="card-content">
+      <h3><i class="fa fa-graduation-cap icon"></i>Improving Object Shape of 3D Detector</h3>
+      <p>
+        Enhancing object shape accuracy with innovative techniques and a lightweight quantized model.
+        <br><a href="https://icoin.org/media?key=site/icoin2024/abs/P-3-2.pdf" target="_blank">[Paper]</a>
+      </p>
+    </div>
+  </div>
 
-### 3D Detector for Occluded Object under Obstructed Conditions
-We propose a deep learning framework for reconstructing the occluded object. With the encoder-decoder methodology, our model ability to perceive and understand 3-D space under obstructed conditions. Leveraging the advantages of the point-voxel-based method, the model generates the high-quality 3D bounding box while preserving detailed object shape context. Please refer to our publication
-\[[<font color="brown">paper</font>](https://ieeexplore.ieee.org/abstract/document/10399338/){:target="blank"}\]
-![](../images/3ONet_abstract.png)
+  <!-- Academic Project 4 -->
+  <div class="project-card">
+    <img src="../images/robot_matlab.gif" alt="Jumping Optimization for Quadruped Robot">
+    <div class="card-content">
+      <h3><i class="fa fa-graduation-cap icon"></i>Jumping Optimization for Quadruped Robot</h3>
+      <p>
+        Optimizing jump trajectories using spatial methods on both Matlab and ROS platforms for agile robotics.
+        <br><a href="https://github.com/hiepbk/Quadruped_Robot_A1_Matlab" target="_blank">[Matlab Source]</a> |
+        <a href="https://github.com/hiepbk/Quadruped_Robot_A1_ROS_Gazebo" target="_blank">[ROS Source]</a>
+      </p>
+    </div>
+  </div>
 
-### Improving Object Shape of 3D Detector
-We propose a method for enhancing object shape for 3D detector. Please refer to our publication
-\[[<font color="brown">paper</font>](https://icoin.org/media?key=site/icoin2024/abs/P-3-2.pdf){:target="blank"}\]
-
-![](../images/ESSDET_model.png)
-
-### Jumping optimization for quadruped robot.
-We propose a method for optimizing the jump trajectory of quadruped robot using spatial v2. Please refer to our source
-\[[<font color="brown">matlab source</font>](https://github.com/hiepbk/Quadruped_Robot_A1_Matlab){:target="blank"}\] | \[[<font color="brown">ros source</font>](https://github.com/hiepbk/Quadruped_Robot_A1_ROS_Gazebo){:target="blank"}\]
-
-![](../images/robot_matlab.gif) 
-
-![](../images/robot_ros.gif)
+</div>
 
 
