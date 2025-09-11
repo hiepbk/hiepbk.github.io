@@ -104,7 +104,7 @@ for i in range(N):
 
 4. **Trích xuất đặc trưng**: Tính toán đặc trưng cho mỗi voxel dựa trên các điểm bên trong.
 
-![Voxelization Process](/images/blog/voxelization/voxelization_process.png)
+![Voxelization Process](/images/blog/voxelization/voxelization_1.png)
 
 ## Ứng dụng Voxelization trong mô hình phát hiện đối tượng 3D
 
@@ -142,7 +142,7 @@ def visualize_voxel_with_points(points, voxel_features, coors, sparse_shape):
 
 Kết quả trực quan hóa cho thấy cách các điểm được gom nhóm thành voxel, tạo ra biểu diễn có cấu trúc của môi trường 3D.
 
-![Voxelization Visualization](/images/blog/voxelization/voxel_visualization.png)
+![Voxelization Visualization](/images/blog/voxelization/voxel_2.png)
 
 ## Kết luận
 
