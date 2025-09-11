@@ -21,7 +21,7 @@ image:
     margin: 1em;
     flex: 1 1 300px;
     max-width: 320px;
-    transition: transform 0.2s;
+    transition: transform 0.2s, width 0.2s, height 0.2s;
     overflow: hidden;
   }
   .project-card:hover {
@@ -46,11 +46,13 @@ image:
     margin-right: 0.5em;
     color: #007acc;
   }
-  /* New CSS rule for zoomed project card */
+  /* Updated CSS rule for zoomed project card: stretch to nearly full width */
   .project-card.zoomed {
-    transform: scale(1.2);
-    z-index: 100;
     position: relative;
+    z-index: 100;
+    width: 90% !important;
+    max-width: none !important;
+    transform: scale(1.0); /* remove scale transform since width change handles stretching */
   }
 </style>
 
