@@ -48,14 +48,27 @@ I am interested in many different aspects of Computer Vision and Robotics:
 
 
 2. An end-to-end 3D Object Detector and SORT tracking method using lidar-camera (6-8 cams), run on a Jetson edge-device, display realtime support bbox mode or 3D model mode base on leightweight Godot front end.
-- Multi-threaded Architecture: Independent data loading, inference, post-processing, and visualization threads.
-- Real-time Visualization: build toolbox of 3D point cloud rendering with Open3D.
-- FPS tracking and bottleneck analysis.
-- Flexible Display: Support for point clouds, voxels, and bounding box visualization
+- Lighweight c++ pipeline and quantized INT8 inference model.
+- Tiny Lidar-Camera Backbone inference engine independent of TensorRT.
+- Real-time 3D visualization at 60+ FPS with GPU instancing and Smart Object Pooling using Godot framework.
+- Simple and Online Realtime Tracking (SORT) method based on detection model
+- Multi-device streaming for remote monitoring, websocket communication.
 
 ![3D Object Detection Tracking Jetson Godot](../images/project//jetson_3d_detection_tracking.gif) 
 ![3D Object Detection Tracking Jetson Image](../images/project//receiver_jetson_crop.gif)
 
+### ADAS Point Cloud Scene Reconstruction
+
+A 3D point cloud reconstructon method from multi-view camera input only
+- Multi-Dataset Support: NuScenes, DDAD, KITTI with unified interface
+- Self-Supervised Learning: No ground truth depth required for training
+- Multi-View Geometry: Leverages temporal consistency across frames
+- Visualization Tools: Integrated CamViz for 3D pointcloud visualization
+
+
+![ADAS Point Cloud Scene Reconstruction](../images/project/pc_recon.png)
+![ADAS Point Cloud Scene Reconstruction](../images/project/pc_recon2.png)
+![ADAS Point Cloud Scene Reconstruction](../images/project/pc_recon4.png)
 
 ## Academia Research Project
 
