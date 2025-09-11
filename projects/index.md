@@ -27,16 +27,33 @@ image:
 
 I am interested in many different aspects of Computer Vision and Robotics:
 
-- Large-scale representation learning of 3D Point Cloud.
-- 3D Object Detection and Tracking of Point Cloud.
-- Simultaneous Localization and Mapping (SLAM) and Depth Estimation.
-- Quadruped Robot Optimization.
+- 2D/3D Object Detection
+- 2D/3D Object Tracking
+- Point Cloud Reconstruction
+- 2D/3D Panoptic Segmentation
+- 2D/3D Semantic/Instance Segmentation 
 
 
-## On-going Projects
+## Production Projects
 
-### 3D Depth Estimation.
-### Simultaneous Localization and Mapping (SLAM).
+### ADAS 3D Object Detection
+1. An end-to-end 3D Object Detector using lidar only run on a HPC, display realtime with predicted bbox and raw sequence point cloud, can run with 12+ FPS and AP> 85 for Car, Truck, etc classes.
+- Multi-threaded Architecture: Independent data loading, inference, post-processing, and visualization threads.
+- Real-time Visualization: build toolbox of 3D point cloud rendering with Open3D.
+- FPS tracking and bottleneck analysis.
+- Flexible Display: Support for point clouds, voxels, and bounding box visualization
+
+![](../images/project//FocalFormer3D_crop.gif)
+
+
+
+2. An end-to-end 3D Object Detector and SORT tracking method using lidar-camera (6-8 cams), run on a Jetson edge-device, display realtime support bbox mode or 3D model mode base on leightweight Godot front end.
+- Multi-threaded Architecture: Independent data loading, inference, post-processing, and visualization threads.
+- Real-time Visualization: build toolbox of 3D point cloud rendering with Open3D.
+- FPS tracking and bottleneck analysis.
+- Flexible Display: Support for point clouds, voxels, and bounding box visualization
+
+![](../images/project//jetson_3d_detection_tracking.gif)
 
 ## Academia Research Project
 
