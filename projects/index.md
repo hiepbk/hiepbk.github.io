@@ -46,6 +46,12 @@ image:
     margin-right: 0.5em;
     color: #007acc;
   }
+  /* New CSS rule for zoomed project card */
+  .project-card.zoomed {
+    transform: scale(1.2);
+    z-index: 100;
+    position: relative;
+  }
 </style>
 
 {% include _toc.html %}
@@ -190,5 +196,21 @@ I am passionate about various aspects of Computer Vision and Robotics, including
   </div>
 
 </div>
+
+<!-- JavaScript for card zoom on click -->
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    const cards = document.querySelectorAll('.project-card');
+    cards.forEach(card => {
+      card.addEventListener('click', function(e) {
+        card.classList.toggle('zoomed');
+        e.stopPropagation();
+      });
+    });
+    document.addEventListener('click', function() {
+      cards.forEach(card => card.classList.remove('zoomed'));
+    });
+  });
+</script>
 
 
