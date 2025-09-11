@@ -53,7 +53,8 @@ I am interested in many different aspects of Computer Vision and Robotics:
 - FPS tracking and bottleneck analysis.
 - Flexible Display: Support for point clouds, voxels, and bounding box visualization
 
-![](../images/project//jetson_3d_detection_tracking.gif)
+![](../images/project//jetson_3d_detection_tracking.gif) ![](../images/project//receiver_jetson_crop.gif)
+
 
 ## Academia Research Project
 
