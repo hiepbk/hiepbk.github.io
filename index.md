@@ -18,4 +18,5 @@ In 2020, I got my B.E. in Control Engineering from Hanoi University of Science a
 Feel free to reach out if you are interested in working with us as either full time or intern (term is flexible, summer, spring or fall), or if you are simply interested in collaboration! Find me at hiepbk dot 97 at gmail dot com.
 
 ![Voxelization Visualization](/images/blog/voxelization/voxel_3.gif)
+![Voxelization Visualization](/images/blog/voxelization/voxel_3.jpg)
 
