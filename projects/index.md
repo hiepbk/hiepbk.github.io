@@ -43,7 +43,7 @@ I am interested in many different aspects of Computer Vision and Robotics:
 - FPS tracking and bottleneck analysis.
 - Flexible Display: Support for point clouds, voxels, and bounding box visualization
 
-![](../images/project//FocalFormer3D_crop.gif)
+![3D Object Detection Point Cloud only HPC](../images/project//FocalFormer3D_crop.gif)
 
 
 
@@ -53,7 +53,8 @@ I am interested in many different aspects of Computer Vision and Robotics:
 - FPS tracking and bottleneck analysis.
 - Flexible Display: Support for point clouds, voxels, and bounding box visualization
 
-![](../images/project//jetson_3d_detection_tracking.gif) ![](../images/project//receiver_jetson_crop.gif)
+![3D Object Detection Tracking Jetson Godot](../images/project//jetson_3d_detection_tracking.gif) 
+![3D Object Detection Tracking Jetson Image](../images/project//receiver_jetson_crop.gif)
 
 
 ## Academia Research Project
