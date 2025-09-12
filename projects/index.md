@@ -1,60 +1,10 @@
 ---
-layout: page
+layout: projects
 title: Projects
 excerpt: "Showcasing innovative projects in Computer Vision, Robotics, and Deep Learning."
 tags: [Jekyll, theme, responsive, portfolio]
 image: 
 ---
-
-<style>
-  /* Custom styles for project cards */
-  .project-cards {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-around;
-    margin: 2em 0;
-  }
-  .project-card {
-    background: #fff;
-    border-radius: 8px;
-    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-    margin: 1em;
-    flex: 1 1 300px;
-    max-width: 320px;
-    transition: transform 0.2s, width 0.2s, height 0.2s;
-    overflow: hidden;
-  }
-  .project-card:hover {
-    transform: scale(1.03);
-  }
-  .project-card img {
-    width: 100%;
-    height: auto;
-  }
-  .project-card .card-content {
-    padding: 1em;
-  }
-  .project-card h3 {
-    margin-top: 0;
-    font-size: 1.25em;
-  }
-  .project-card p {
-    font-size: 0.95em;
-    line-height: 1.4em;
-  }
-  .project-card .icon {
-    margin-right: 0.5em;
-    color: #007acc;
-  }
-  /* Updated CSS rule for zoomed project card: stretch to nearly full width */
-  .project-card.zoomed {
-    position: relative;
-    z-index: 100;
-    width: 90% !important;
-    max-width: none !important;
-    transform: scale(1.0); /* remove scale transform since width change handles stretching */
-  }
-</style>
 
 {% include _toc.html %}
 
@@ -198,21 +148,5 @@ I am passionate about various aspects of Computer Vision and Robotics, including
   </div>
 
 </div>
-
-<!-- JavaScript for card zoom on click -->
-<script>
-  document.addEventListener('DOMContentLoaded', function() {
-    const cards = document.querySelectorAll('.project-card');
-    cards.forEach(card => {
-      card.addEventListener('click', function(e) {
-        card.classList.toggle('zoomed');
-        e.stopPropagation();
-      });
-    });
-    document.addEventListener('click', function() {
-      cards.forEach(card => card.classList.remove('zoomed'));
-    });
-  });
-</script>
 
 

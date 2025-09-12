@@ -1,0 +1,294 @@
+<!doctype html>
+<!--[if lt IE 7]><html class="no-js lt-ie9 lt-ie8 lt-ie7" lang="en"> <![endif]-->
+<!--[if (IE 7)&!(IEMobile)]><html class="no-js lt-ie9 lt-ie8" lang="en"><![endif]-->
+<!--[if (IE 8)&!(IEMobile)]><html class="no-js lt-ie9" lang="en"><![endif]-->
+<!--[if gt IE 8]><!--> <html class="no-js" lang="en"><!--<![endif]-->
+<head>
+{% include _head.html %}
+<style>
+  /* Custom styles for project cards */
+  .project-cards {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-around;
+    margin: 2em 0;
+  }
+  .project-card {
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    margin: 1em;
+    flex: 1 1 300px;
+    max-width: 320px;
+    transition: transform 0.2s;
+    overflow: hidden;
+    cursor: pointer;
+  }
+  .project-card:hover {
+    transform: scale(1.03);
+  }
+  .project-card img {
+    width: 100%;
+    height: auto;
+  }
+  .project-card .card-content {
+    padding: 1em;
+  }
+  .project-card h3 {
+    margin-top: 0;
+    font-size: 1.25em;
+  }
+  .project-card p {
+    font-size: 0.95em;
+    line-height: 1.4em;
+  }
+  .project-card .icon {
+    margin-right: 0.5em;
+    color: #007acc;
+  }
+  
+  /* Modal styles */
+  .modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0,0,0,0.8);
+  }
+  
+  .modal-content {
+    background-color: #fff;
+    margin: 5% auto;
+    padding: 20px;
+    border-radius: 10px;
+    width: 85%;
+    max-width: 900px;
+    max-height: 80%;
+    overflow-y: auto;
+    position: relative;
+  }
+  
+  .modal-content img {
+    width: 100%;
+    height: auto;
+    border-radius: 8px;
+    margin-bottom: 1em;
+  }
+  
+  .close {
+    color: #aaa;
+    float: right;
+    font-size: 28px;
+    font-weight: bold;
+    position: absolute;
+    right: 15px;
+    top: 10px;
+  }
+  
+  .close:hover,
+  .close:focus {
+    color: #000;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  
+  .modal h2 {
+    margin-top: 0;
+    color: #333;
+  }
+  
+  .modal .features {
+    list-style: none;
+    padding: 0;
+  }
+  
+  .modal .features li {
+    padding: 0.5em 0;
+    border-bottom: 1px solid #eee;
+  }
+  
+  .modal .features li:last-child {
+    border-bottom: none;
+  }
+</style>
+</head>
+
+<body class="page">
+
+{% include _browser-upgrade.html %}
+
+{% include _navigation.html %}
+
+{% if page.image.feature %}
+  <div class="image-wrap">
+  <img src=
+    {% if page.image.feature contains 'http' %}
+      "{{ page.image.feature }}"
+    {% else %}
+      "{{ site.url }}/images/{{ page.image.feature }}"
+    {% endif %}
+  alt="{{ page.title }} feature image">
+  {% if page.image.credit %}
+    <span class="image-credit">Photo Credit: <a href="{{ page.image.creditlink }}">{{ page.image.credit }}</a></span>
+  {% endif %}
+  </div><!-- /.image-wrap -->
+{% endif %}
+
+<div id="main" role="main">
+  <div class="article-author-side">
+    {% include _author-bio.html %}
+  </div>
+  <article class="page">
+    <h1>{{ page.title }}</h1>
+    <div class="article-wrap">
+      {{ content }}
+      {% if page.share != false %}
+        {% include _social-share.html %}
+      {% endif %}
+    </div><!-- /.article-wrap -->
+    {% if site.owner.disqus-shortname and page.comments == true %}
+      <section id="disqus_thread"></section><!-- /#disqus_thread -->
+    {% endif %}
+  </article>
+</div><!-- /#index -->
+
+<!-- Modal for project details -->
+<div id="projectModal" class="modal">
+  <div class="modal-content">
+    <span class="close">&times;</span>
+    <div id="modalBody">
+      <!-- Project details will be inserted here -->
+    </div>
+  </div>
+</div>
+
+<div class="footer-wrap">
+  <footer>
+    {% include _footer.html %}
+  </footer>
+</div><!-- /.footer-wrap -->
+
+{% include _scripts.html %}          
+{% if jekyll.environment == 'production' %}
+{% include analytics.html %}
+{% endif %}
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  const modal = document.getElementById('projectModal');
+  const modalBody = document.getElementById('modalBody');
+  const closeBtn = document.querySelector('.close');
+  
+  // Project data
+  const projectData = {
+    'lidar-detection': {
+      title: '[ADAS] 3D Object Detection',
+      image: '../images/project/FocalFormer3D_crop.gif',
+      features: [
+        'End-to-end 3D Object Detector using LiDAR only',
+        'Runs on HPC with real-time display',
+        'Achieves 12+ FPS with AP > 85% for Car, Truck classes',
+        'Multi-threaded Architecture for independent data loading, inference, post-processing, and visualization',
+        'Real-time Visualization with 3D point cloud rendering using Open3D',
+        'FPS tracking and bottleneck analysis',
+        'Flexible Display supporting point clouds, voxels, and bounding box visualization'
+      ]
+    },
+    'lidar-camera-tracking': {
+      title: '[ADAS] 3D Object Detection & Tracking',
+      image: '../images/project/jetson_3d_detection_tracking.gif',
+      features: [
+        'End-to-end 3D Object Detector with SORT tracking',
+        'Uses LiDAR-camera fusion (6-8 cameras)',
+        'Runs on Jetson edge-device with real-time display',
+        'Lightweight C++ pipeline with quantized INT8 inference model',
+        'Tiny LiDAR-Camera Backbone inference engine independent of TensorRT',
+        'Real-time 3D visualization at 60+ FPS with GPU instancing',
+        'Smart Object Pooling using Godot framework',
+        'Simple Online Real-time Tracking (SORT) method',
+        'Multi-device streaming for remote monitoring with WebSocket communication'
+      ]
+    },
+    'point-cloud-reconstruction': {
+      title: '[ADAS] 3D Point Cloud Scene Reconstruction',
+      image: '../images/project/pc_recon.png',
+      features: [
+        '3D point cloud reconstruction from multi-view camera input only',
+        'Multi-Dataset Support: NuScenes, DDAD, KITTI with unified interface',
+        'Self-Supervised Learning: No ground truth depth required for training',
+        'Multi-View Geometry: Leverages temporal consistency across frames',
+        'Visualization Tools: Integrated CamViz for 3D point cloud visualization'
+      ]
+    },
+    'panoptic-segmentation': {
+      title: '[ADAS] 2D Panoptic Segmentation',
+      image: '../images/project/pan_seg.gif',
+      features: [
+        '2D Panoptic Segmentation model with 30+ FPS on PC',
+        '10+ FPS on Jetson edge-device with 65+ PQ score',
+        'Multi-threaded Architecture for independent processing',
+        'Pseudo-label and teacher-student model for distillation learning',
+        'Real-time inference using live camera/webcam',
+        'Web app using Gradio for prototype purposes',
+        'Lightweight quantized model for Jetson edge-device'
+      ]
+    },
+    '2d-detection': {
+      title: '[ADAS] 2D Object Detection',
+      image: '../images/project/3d_od.gif',
+      features: [
+        '2D Object Detection model with 30+ FPS on PC',
+        '10+ FPS on Jetson edge-device',
+        'Multi-threaded Architecture for independent processing',
+        'Pseudo-label and teacher-student model for distillation learning',
+        'Real-time inference using live camera/webcam',
+        'Web app using Gradio for prototype purposes',
+        'Lightweight quantized model for Jetson edge-device'
+      ]
+    }
+  };
+  
+  // Add click listeners to project cards
+  document.querySelectorAll('.project-card').forEach((card, index) => {
+    card.addEventListener('click', function() {
+      const projectKeys = Object.keys(projectData);
+      const projectKey = projectKeys[index];
+      const project = projectData[projectKey];
+      
+      if (project) {
+        modalBody.innerHTML = `
+          <h2><i class="fa fa-${getIcon(index)} icon"></i>${project.title}</h2>
+          <img src="${project.image}" alt="${project.title}">
+          <h3>Key Features:</h3>
+          <ul class="features">
+            ${project.features.map(feature => `<li>• ${feature}</li>`).join('')}
+          </ul>
+        `;
+        modal.style.display = 'block';
+      }
+    });
+  });
+  
+  function getIcon(index) {
+    const icons = ['car', 'lightbulb-o', 'picture-o', 'desktop', 'eye'];
+    return icons[index] || 'cog';
+  }
+  
+  // Close modal
+  closeBtn.addEventListener('click', function() {
+    modal.style.display = 'none';
+  });
+  
+  window.addEventListener('click', function(event) {
+    if (event.target === modal) {
+      modal.style.display = 'none';
+    }
+  });
+});
+</script>
+
+</body>
+</html> 
