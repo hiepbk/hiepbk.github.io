@@ -94,6 +94,22 @@ I am passionate about various aspects of Computer Vision and Robotics, including
 
 </div>
 
+  <!-- Project 6: Humnan Intrustion Detection -->
+  <div class="project-card">
+    <img src="../images/project/human_intrusion.png" alt="[Smart Factory] 2D Multi-Cam Human Intrusion Detection">
+    <div class="card-content">
+      <h3><i class="fa fa-car icon"></i>[ADAS] 2D Object Detection</h3>
+      <p>
+        <strong>Key Features:</strong><br>
+        • Fast, lightweight model on Jetson edge devices<br>
+        • Real-time display with minimal latency<br>
+        • Optimized for web prototyping with Gradio
+      </p>
+    </div>
+  </div>
+
+</div>
+
 ## Academia Research Projects
 
 <div class="project-cards">
