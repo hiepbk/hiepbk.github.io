@@ -1,0 +1,370 @@
+/* ================================================================
+   CUSTOM THEME ENHANCEMENTS
+   Modern, Professional Website Styling
+   ================================================================ */
+
+/* ==========================================================================
+   NAVIGATION ENHANCEMENTS
+   ========================================================================== */
+
+.navigation-wrapper {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  box-shadow: 0 2px 20px rgba(0,0,0,0.1);
+  border-radius: 0 0 15px 15px;
+  margin-bottom: 2em;
+}
+
+.site-name a {
+  color: white !important;
+  text-decoration: none;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+  transition: all 0.3s ease;
+}
+
+.site-name a:hover {
+  transform: translateY(-2px);
+  text-shadow: 0 4px 8px rgba(0,0,0,0.4);
+}
+
+.top-navigation ul li a {
+  color: rgba(255,255,255,0.9) !important;
+  font-weight: 600;
+  padding: 12px 20px !important;
+  margin: 0 5px;
+  border-radius: 25px;
+  transition: all 0.3s ease;
+  text-decoration: none;
+  position: relative;
+  overflow: hidden;
+}
+
+.top-navigation ul li a:hover {
+  background: rgba(255,255,255,0.2);
+  color: white !important;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+}
+
+.top-navigation ul li a::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+  transition: left 0.5s;
+}
+
+.top-navigation ul li a:hover::before {
+  left: 100%;
+}
+
+/* ==========================================================================
+   PAGE HEADERS & TITLES
+   ========================================================================== */
+
+.page h1, 
+.post h1,
+h1 {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  font-weight: 800;
+  font-size: 2.5em;
+  margin-bottom: 0.5em;
+  text-align: center;
+  position: relative;
+}
+
+.page h1::after,
+.post h1::after,
+h1::after {
+  content: '';
+  display: block;
+  width: 100px;
+  height: 4px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  margin: 0.5em auto;
+  border-radius: 2px;
+}
+
+/* ==========================================================================
+   SECTION HEADERS
+   ========================================================================== */
+
+h2 {
+  color: #2c3e50;
+  font-weight: 700;
+  font-size: 1.8em;
+  margin: 2em 0 1em 0;
+  padding: 0.5em 0;
+  border-bottom: 3px solid #3498db;
+  position: relative;
+}
+
+h2::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: -3px;
+  width: 50px;
+  height: 3px;
+  background: #e74c3c;
+  border-radius: 2px;
+}
+
+h3 {
+  color: #34495e;
+  font-weight: 600;
+  font-size: 1.4em;
+  margin: 1.5em 0 0.8em 0;
+  padding-left: 15px;
+  border-left: 4px solid #3498db;
+  position: relative;
+}
+
+/* ==========================================================================
+   CONTENT SECTIONS
+   ========================================================================== */
+
+.article-wrap {
+  background: white;
+  border-radius: 15px;
+  box-shadow: 0 5px 25px rgba(0,0,0,0.08);
+  padding: 2em;
+  margin: 2em 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.article-wrap::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+/* ==========================================================================
+   ENHANCED LISTS
+   ========================================================================== */
+
+ul li {
+  position: relative;
+  padding-left: 25px;
+  margin-bottom: 0.5em;
+}
+
+ul li::before {
+  content: '▶';
+  position: absolute;
+  left: 0;
+  color: #3498db;
+  font-weight: bold;
+}
+
+/* ==========================================================================
+   ENHANCED BUTTONS & LINKS
+   ========================================================================== */
+
+a {
+  color: #3498db;
+  text-decoration: none;
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+a:hover {
+  color: #2980b9;
+}
+
+a::after {
+  content: '';
+  position: absolute;
+  width: 0;
+  height: 2px;
+  bottom: -2px;
+  left: 0;
+  background: linear-gradient(135deg, #3498db, #2980b9);
+  transition: width 0.3s ease;
+}
+
+a:hover::after {
+  width: 100%;
+}
+
+/* ==========================================================================
+   PROFESSIONAL CARDS
+   ========================================================================== */
+
+.info-card {
+  background: white;
+  border-radius: 12px;
+  padding: 1.5em;
+  margin: 1em 0;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+  border-left: 5px solid #3498db;
+  transition: all 0.3s ease;
+}
+
+.info-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+}
+
+/* ==========================================================================
+   RESPONSIVE DESIGN
+   ========================================================================== */
+
+@media (max-width: 768px) {
+  .navigation-wrapper {
+    border-radius: 0;
+  }
+  
+  .top-navigation ul li a {
+    padding: 10px 15px !important;
+    margin: 2px;
+    font-size: 0.9em;
+  }
+  
+  .page h1, 
+  .post h1,
+  h1 {
+    font-size: 2em;
+  }
+  
+  h2 {
+    font-size: 1.5em;
+  }
+  
+  .article-wrap {
+    padding: 1.5em;
+    margin: 1em 0;
+    border-radius: 10px;
+  }
+}
+
+/* ==========================================================================
+   AUTHOR BIO ENHANCEMENTS
+   ========================================================================== */
+
+.bio-photo {
+  border-radius: 50%;
+  box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+  transition: all 0.3s ease;
+}
+
+.bio-photo:hover {
+  transform: scale(1.05);
+  box-shadow: 0 12px 35px rgba(0,0,0,0.2);
+}
+
+.author-social {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white !important;
+  padding: 8px 15px;
+  border-radius: 20px;
+  margin: 5px 2px;
+  display: inline-block;
+  transition: all 0.3s ease;
+  text-decoration: none;
+  font-size: 0.9em;
+  font-weight: 600;
+}
+
+.author-social:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+  color: white !important;
+}
+
+/* ==========================================================================
+   TABLE OF CONTENTS STYLING
+   ========================================================================== */
+
+.toc {
+  background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+  border-radius: 10px;
+  padding: 1.5em;
+  margin: 2em 0;
+  border-left: 5px solid #007acc;
+}
+
+.toc h3 {
+  color: #2c3e50;
+  margin-top: 0;
+  border-left: none;
+  padding-left: 0;
+}
+
+.toc ul {
+  list-style: none;
+  padding-left: 0;
+}
+
+.toc ul li {
+  padding-left: 20px;
+  margin-bottom: 0.3em;
+}
+
+.toc ul li::before {
+  content: '📄';
+  margin-right: 8px;
+}
+
+/* ==========================================================================
+   ANIMATIONS
+   ========================================================================== */
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.article-wrap,
+.info-card {
+  animation: fadeInUp 0.6s ease-out;
+}
+
+/* ==========================================================================
+   SCROLL ANIMATIONS
+   ========================================================================== */
+
+html {
+  scroll-behavior: smooth;
+}
+
+/* ==========================================================================
+   CUSTOM UTILITY CLASSES
+   ========================================================================== */
+
+.text-center {
+  text-align: center;
+}
+
+.text-gradient {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.highlight-box {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+  border-radius: 10px;
+  padding: 1.5em;
+  margin: 1em 0;
+  border-left: 4px solid #667eea;
+} 
