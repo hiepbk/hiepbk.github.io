@@ -101,9 +101,7 @@ I am passionate about various aspects of Computer Vision and Robotics, including
         <strong>Key Features:</strong><br>
         • Multi-camera surveillance system for industrial safety<br>
         • Real-time instance segmentation with high-speed processing<br>
-        • PyQt-based UI for optimal speed and latency performance<br>
-        • Advanced multi-threading and multi-processing pipeline<br>
-        • Instant alert system for unauthorized personnel detection
+        • Advanced multi-threading and multi-processing pipeline
       </p>
     </div>
   </div>
