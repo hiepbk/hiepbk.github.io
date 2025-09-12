@@ -186,7 +186,7 @@ document.addEventListener('DOMContentLoaded', function() {
   const projectData = {
     'lidar-detection': {
       title: '[ADAS] 3D Object Detection',
-      image: '../images/project/FocalFormer3D_crop.gif',
+      images: ['../images/project/FocalFormer3D_crop.gif'],
       features: [
         'End-to-end 3D Object Detector using LiDAR only',
         'Runs on HPC with real-time display',
@@ -198,9 +198,11 @@ document.addEventListener('DOMContentLoaded', function() {
       ]
     },
     'lidar-camera-tracking': {
-      title: '[ADAS] 3D Object Detection & Tracking',
-      image: '../images/project/jetson_3d_detection_tracking.gif',
-      image2: '../images/project/receiver_jetson_crop.gif',
+      title: '[ADAS] 3D Object Detection & Tracking (Edge Device)',
+      images: [
+        '../images/project/jetson_3d_detection_tracking.gif',
+        '../images/project/receiver_jetson_crop.gif'
+      ],
       features: [
         'End-to-end 3D Object Detector with SORT tracking',
         'Uses LiDAR-camera fusion (6-8 cameras)',
@@ -215,9 +217,11 @@ document.addEventListener('DOMContentLoaded', function() {
     },
     'point-cloud-reconstruction': {
       title: '[ADAS] 3D Point Cloud Scene Reconstruction',
-      image: '../images/project/pc_recon.png',
-      image2: '../images/project/pc_recon2.png',
-      image3: '../images/project/pc_recon4.png',
+      images: [
+        '../images/project/pc_recon.png',
+        '../images/project/pc_recon2.png',
+        '../images/project/pc_recon4.png'
+      ],
       features: [
         '3D point cloud reconstruction from multi-view camera input only',
         'Multi-Dataset Support: NuScenes, DDAD, KITTI with unified interface',
@@ -228,7 +232,7 @@ document.addEventListener('DOMContentLoaded', function() {
     },
     'panoptic-segmentation': {
       title: '[ADAS] 2D Panoptic Segmentation',
-      image: '../images/project/pan_seg.gif',
+      images: ['../images/project/pan_seg.gif'],
       features: [
         '2D Panoptic Segmentation model with 30+ FPS on PC',
         '10+ FPS on Jetson edge-device with 65+ PQ score',
@@ -241,7 +245,7 @@ document.addEventListener('DOMContentLoaded', function() {
     },
     '2d-detection': {
       title: '[ADAS] 2D Object Detection',
-      image: '../images/project/3d_od.gif',
+      images: ['../images/project/3d_od.gif'],
       features: [
         '2D Object Detection model with 30+ FPS on PC',
         '10+ FPS on Jetson edge-device',
@@ -262,9 +266,17 @@ document.addEventListener('DOMContentLoaded', function() {
       const project = projectData[projectKey];
       
       if (project) {
+        // Build images HTML from images array
+        let imagesHtml = '';
+        if (project.images && project.images.length > 0) {
+          project.images.forEach(imageUrl => {
+            imagesHtml += `<img src="${imageUrl}" alt="${project.title}">`;
+          });
+        }
+        
         modalBody.innerHTML = `
           <h2><i class="fa fa-${getIcon(index)} icon"></i>${project.title}</h2>
-          <img src="${project.image}" alt="${project.title}">
+          ${imagesHtml}
           <h3>Key Features:</h3>
           <ul class="features">
             ${project.features.map(feature => `<li>• ${feature}</li>`).join('')}

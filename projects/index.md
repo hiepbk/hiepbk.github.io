@@ -38,9 +38,9 @@ I am passionate about various aspects of Computer Vision and Robotics, including
 
   <!-- Project 2: 3D Object Detection & SORT Tracking -->
   <div class="project-card">
-    <img src="../images/project/jetson_3d_detection_tracking.gif" alt="[ADAS] 3D Object Detection Tracking">
+    <img src="../images/project/jetson_3d_detection_tracking.gif" alt="[ADAS] 3D Object Detection Trackin (Edge Device)">
     <div class="card-content">
-      <h3><i class="fa fa-lightbulb-o icon"></i>[ADAS] 3D Object Detection & Tracking</h3>
+      <h3><i class="fa fa-car icon"></i>[ADAS] 3D Object Detection & Tracking</h3>
       <p>
         <strong>Key Features:</strong><br>
         • Fusion of LiDAR and camera data<br>
@@ -54,7 +54,7 @@ I am passionate about various aspects of Computer Vision and Robotics, including
   <div class="project-card">
     <img src="../images/project/pc_recon.png" alt="[ADAS] 3D Point Cloud Scene Reconstruction">
     <div class="card-content">
-      <h3><i class="fa fa-picture-o icon"></i>[ADAS] 3D Point Cloud Scene Reconstruction</h3>
+      <h3><i class="fa fa-car icon"></i>[ADAS] 3D Point Cloud Scene Reconstruction</h3>
       <p>
         <strong>Key Features:</strong><br>
         • Unified interface for multi-dataset support (NuScenes, DDAD, KITTI)<br>
@@ -68,7 +68,7 @@ I am passionate about various aspects of Computer Vision and Robotics, including
   <div class="project-card">
     <img src="../images/project/pan_seg.gif" alt="[ADAS] 2D Panoptic Segmentation">
     <div class="card-content">
-      <h3><i class="fa fa-desktop icon"></i>[ADAS] 2D Panoptic Segmentation</h3>
+      <h3><i class="fa fa-car icon"></i>[ADAS] 2D Panoptic Segmentation</h3>
       <p>
         <strong>Key Features:</strong><br>
         • Real-time inference on PC and edge devices<br>
@@ -82,7 +82,7 @@ I am passionate about various aspects of Computer Vision and Robotics, including
   <div class="project-card">
     <img src="../images/project/3d_od.gif" alt="[ADAS] 2D Object Detection">
     <div class="card-content">
-      <h3><i class="fa fa-eye icon"></i>[ADAS] 2D Object Detection</h3>
+      <h3><i class="fa fa-car icon"></i>[ADAS] 2D Object Detection</h3>
       <p>
         <strong>Key Features:</strong><br>
         • Fast, lightweight model on Jetson edge devices<br>
