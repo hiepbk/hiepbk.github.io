@@ -189,7 +189,7 @@ document.addEventListener('DOMContentLoaded', function() {
       images: [
         '../images/project/FocalFormer3D_crop.gif',
         '../images/project/3d_od_image.gif'
-              ],
+      ],
       features: [
         'End-to-end 3D Object Detector using LiDAR only',
         'Runs on HPC with real-time display',
@@ -248,7 +248,7 @@ document.addEventListener('DOMContentLoaded', function() {
     },
     '2d-detection': {
       title: '[ADAS] 2D Object Detection',
-      images: ['../images/project/human_intrusion.png'],
+      images: ['../images/project/2d_od.gif'],
       features: [
         '2D Object Detection model with 30+ FPS on PC',
         '10+ FPS on Jetson edge-device',
@@ -257,6 +257,68 @@ document.addEventListener('DOMContentLoaded', function() {
         'Real-time inference using live camera/webcam',
         'Web app using Gradio for prototype purposes',
         'Lightweight quantized model for Jetson edge-device'
+      ]
+    },
+    'human-intrusion-detection': {
+      title: '[Smart Factory] Human Intrusion Detection',
+      images: ['../images/project/human_intrusion.png'],
+      features: [
+        'Multi-camera surveillance system for industrial safety monitoring',
+        'Real-time instance segmentation with high-speed processing capabilities',
+        'PyQt-based user interface optimized for speed and minimal latency',
+        'Advanced multi-threading and multi-processing pipeline architecture',
+        'Instant alert system for unauthorized personnel detection',
+        'Scalable to handle large numbers of camera inputs simultaneously',
+        'Integration with existing factory security infrastructure',
+        'Customizable detection zones and sensitivity settings'
+      ]
+    },
+    'tsstdet-transformer': {
+      title: '3D Object Detection with Spatial Shape Transformer',
+      images: ['../images/TSSTDET_abstract.png'],
+      features: [
+        'High-performance 3D Object detection framework using point cloud',
+        'Based on Transformer architecture for spatial understanding',
+        'Comprehensive understanding of object dimensions and rotations',
+        'Advanced spatial relationships modeling with surroundings',
+        'Published in IEEE Sensors Journal',
+        'State-of-the-art performance on benchmark datasets'
+      ]
+    },
+    '3onet-occluded': {
+      title: '3D Detector for Occluded Object under Obstructed Conditions',
+      images: ['../images/3ONet_abstract.png'],
+      features: [
+        'Deep learning framework for reconstructing occluded objects',
+        'Encoder-decoder methodology for 3D space understanding',
+        'Point-voxel-based method for high-quality 3D bounding boxes',
+        'Preserves detailed object shape context under obstruction',
+        'Ability to perceive and understand 3D space under obstructed conditions',
+        'Published research with proven effectiveness'
+      ]
+    },
+    'essdet-shape': {
+      title: 'Improving Object Shape of 3D Detector',
+      images: ['../images/ESSDET_model.png'],
+      features: [
+        'Method for enhancing object shape accuracy in 3D detection',
+        'Improved spatial shape representation for better detection',
+        'Enhanced shape context understanding',
+        'Lightweight and efficient model architecture',
+        'Published in International Conference on Information Networking (ICOIN 2024)',
+        'Quantized model for edge deployment'
+      ]
+    },
+    'quadruped-jumping': {
+      title: 'Jumping Optimization for Quadruped Robot',
+      images: ['../images/robot_matlab.gif', '../images/robot_ros.gif'],
+      features: [
+        'Optimization method for quadruped robot jump trajectories',
+        'Contact-timing and trajectory optimization for 3D jumping',
+        'Implementation in both MATLAB and ROS platforms',
+        'Gazebo simulation environment for testing',
+        'Spatial optimization algorithms for agile robotics',
+        'Open-source implementation available on GitHub'
       ]
     }
   };
@@ -291,7 +353,7 @@ document.addEventListener('DOMContentLoaded', function() {
   });
   
   function getIcon(index) {
-    const icons = ['car', 'lightbulb-o', 'picture-o', 'desktop', 'eye'];
+    const icons = ['car', 'car', 'car', 'car', 'car', 'shield', 'graduation-cap', 'graduation-cap', 'graduation-cap', 'graduation-cap'];
     return icons[index] || 'cog';
   }
   

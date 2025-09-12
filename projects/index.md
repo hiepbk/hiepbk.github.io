@@ -80,7 +80,7 @@ I am passionate about various aspects of Computer Vision and Robotics, including
 
   <!-- Project 5: 2D Object Detection -->
   <div class="project-card">
-    <img src="../images/project/3d_od.gif" alt="[ADAS] 2D Object Detection">
+    <img src="../images/project/2d_od.gif" alt="[ADAS] 2D Object Detection">
     <div class="card-content">
       <h3><i class="fa fa-car icon"></i>[ADAS] 2D Object Detection</h3>
       <p>
@@ -92,18 +92,18 @@ I am passionate about various aspects of Computer Vision and Robotics, including
     </div>
   </div>
 
-</div>
-
-  <!-- Project 6: Humnan Intrustion Detection -->
+  <!-- Project 6: Human Intrusion Detection -->
   <div class="project-card">
     <img src="../images/project/human_intrusion.png" alt="[Smart Factory] 2D Multi-Cam Human Intrusion Detection">
     <div class="card-content">
-      <h3><i class="fa fa-car icon"></i>[ADAS] 2D Object Detection</h3>
+      <h3><i class="fa fa-shield icon"></i>[Smart Factory] Human Intrusion Detection</h3>
       <p>
         <strong>Key Features:</strong><br>
-        • Fast, lightweight model on Jetson edge devices<br>
-        • Real-time display with minimal latency<br>
-        • Optimized for web prototyping with Gradio
+        • Multi-camera surveillance system for industrial safety<br>
+        • Real-time instance segmentation with high-speed processing<br>
+        • PyQt-based UI for optimal speed and latency performance<br>
+        • Advanced multi-threading and multi-processing pipeline<br>
+        • Instant alert system for unauthorized personnel detection
       </p>
     </div>
   </div>
