@@ -16,14 +16,16 @@ In 2020, I got my B.E. in Control Engineering from Hanoi University of Science a
 
 Feel free to reach out if you are interested in working with us as either full time or intern (term is flexible, summer, spring or fall), or if you are simply interested in collaboration! Find me at hiepbk dot 97 at gmail dot com.
 
+
+![Voxelization Visualization](/images/blog/voxelization/voxel_3.gif)
+![Voxelization Visualization](/images/blog/voxelization/voxel_3.jpg)
+
+
 ## Project Showcase
 
 <div class="project-showcase">
   <div class="showcase-grid" id="projectShowcase">
     <!-- Project images will be automatically loaded here -->
-  </div>
-  <div class="showcase-link">
-    <a href="/projects/" class="view-all-btn">View All Projects →</a>
   </div>
 </div>
 
@@ -62,14 +64,17 @@ Feel free to reach out if you are interested in working with us as either full t
   
   .showcase-overlay {
     position: absolute;
-    bottom: 0;
+    top: 0;
     left: 0;
     right: 0;
-    background: linear-gradient(transparent, rgba(0,0,0,0.7));
+    bottom: 0;
+    background: rgba(0,0,0,0.7);
     color: white;
-    padding: 1em 0.5em 0.5em;
-    font-size: 0.8em;
-    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1em;
+    font-weight: bold;
     opacity: 0;
     transition: opacity 0.2s;
   }
@@ -77,94 +82,68 @@ Feel free to reach out if you are interested in working with us as either full t
   .showcase-item:hover .showcase-overlay {
     opacity: 1;
   }
-  
-  .showcase-link {
-    text-align: center;
-    margin-top: 1.5em;
-  }
-  
-  .view-all-btn {
-    display: inline-block;
-    padding: 0.8em 2em;
-    background: #007acc;
-    color: white;
-    text-decoration: none;
-    border-radius: 25px;
-    font-weight: bold;
-    transition: background 0.2s;
-  }
-  
-  .view-all-btn:hover {
-    background: #005a99;
-  }
 </style>
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-  // Project data - same as in projects.html but simplified
-  const showcaseProjects = [
-    {
-      title: '3D Object Detection',
-      image: '/images/project/FocalFormer3D_crop.gif',
-      category: 'ADAS'
-    },
-    {
-      title: '3D Detection & Tracking',
-      image: '/images/project/jetson_3d_detection_tracking.gif',
-      category: 'ADAS'
-    },
-    {
-      title: 'Point Cloud Reconstruction',
-      image: '/images/project/pc_recon.png',
-      category: 'ADAS'
-    },
-    {
-      title: 'Panoptic Segmentation',
-      image: '/images/project/pan_seg.gif',
-      category: 'ADAS'
-    },
-    {
-      title: '2D Object Detection',
-      image: '/images/project/2d_od.gif',
-      category: 'ADAS'
-    },
-    {
-      title: 'Human Intrusion Detection',
-      image: '/images/project/human_intrusion.png',
-      category: 'Smart Factory'
-    },
-    {
-      title: 'Spatial Shape Transformer',
-      image: '/images/TSSTDET_abstract.png',
-      category: 'Research'
-    },
-    {
-      title: 'Occluded Object Detection',
-      image: '/images/3ONet_abstract.png',
-      category: 'Research'
-    }
-  ];
-  
   const showcaseContainer = document.getElementById('projectShowcase');
   
-  showcaseProjects.forEach(project => {
-    const item = document.createElement('div');
-    item.className = 'showcase-item';
-    item.onclick = () => window.location.href = '/projects/';
-    
-    item.innerHTML = `
-      <img src="${project.image}" alt="${project.title}">
-      <div class="showcase-overlay">
-        <strong>[${project.category}]</strong><br>
-        ${project.title}
-      </div>
-    `;
-    
-    showcaseContainer.appendChild(item);
-  });
+  // Automatically fetch project data from the projects page
+  fetch('/projects/')
+    .then(response => response.text())
+    .then(html => {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      const projectCards = doc.querySelectorAll('.project-card');
+      
+      projectCards.forEach((card, index) => {
+        const img = card.querySelector('img');
+        if (img) {
+          const item = document.createElement('div');
+          item.className = 'showcase-item';
+          item.onclick = () => window.location.href = '/projects/';
+          
+          item.innerHTML = `
+            <img src="${img.src}" alt="${img.alt}">
+            <div class="showcase-overlay">
+              Click to see details
+            </div>
+          `;
+          
+          showcaseContainer.appendChild(item);
+        }
+      });
+    })
+    .catch(error => {
+      // Fallback: use predefined images if fetch fails
+      const fallbackImages = [
+        '/images/project/FocalFormer3D_crop.gif',
+        '/images/project/jetson_3d_detection_tracking.gif',
+        '/images/project/pc_recon.png',
+        '/images/project/pan_seg.gif',
+        '/images/project/2d_od.gif',
+        '/images/project/human_intrusion.png',
+        '/images/TSSTDET_abstract.png',
+        '/images/3ONet_abstract.png',
+        '/images/ESSDET_model.png',
+        '/images/robot_matlab.gif'
+      ];
+      
+      fallbackImages.forEach((imageSrc, index) => {
+        const item = document.createElement('div');
+        item.className = 'showcase-item';
+        item.onclick = () => window.location.href = '/projects/';
+        
+        item.innerHTML = `
+          <img src="${imageSrc}" alt="Project ${index + 1}">
+          <div class="showcase-overlay">
+            Click to see details
+          </div>
+        `;
+        
+        showcaseContainer.appendChild(item);
+      });
+    });
 });
 </script>
-
-![Voxelization Visualization](/images/blog/voxelization/voxel_3.gif)
-![Voxelization Visualization](/images/blog/voxelization/voxel_3.jpg)
 
