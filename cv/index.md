@@ -4,7 +4,6 @@ title: Curriculum Vitae
 excerpt: "Download or view my CV"
 tags: [CV, resume, curriculum vitae]
 comments: true
-image: 
 ---
 
 {% include _toc.html %}
