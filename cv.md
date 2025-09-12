@@ -10,64 +10,40 @@ image:
 <div class="cv-container">
   <div class="cv-header">
     <h2>Curriculum Vitae</h2>
-    <p>You can view my CV below or download it directly.</p>
+    <p>You can view my CV below or download the PDF version.</p>
     
     <div class="cv-actions">
       <a href="/cv/HiepHoang_AI_Engineer.pdf" class="btn-download" download>
         <i class="fa fa-download"></i> Download CV (PDF)
       </a>
       <a href="/cv/HiepHoang_AI_Engineer.pdf" class="btn-view" target="_blank">
-        <i class="fa fa-external-link"></i> Open in New Tab
+        <i class="fa fa-external-link"></i> Open PDF in New Tab
       </a>
-      <button class="btn-toggle" onclick="toggleViewer()">
-        <i class="fa fa-refresh"></i> Try Different Viewer
-      </button>
     </div>
   </div>
 
-  <!-- Method 1: Google Docs Viewer -->
-  <div class="cv-viewer" id="viewer-google">
-    <iframe src="https://docs.google.com/viewer?url=https://hiepbk.github.io/cv/HiepHoang_AI_Engineer.pdf&embedded=true" 
-            width="100%" 
-            height="800px" 
-            style="border: none; border-radius: 8px;">
-      <p>Loading PDF viewer...</p>
-    </iframe>
-  </div>
-
-  <!-- Method 2: Direct PDF Object -->
-  <div class="cv-viewer" id="viewer-direct" style="display: none;">
-    <object data="/cv/HiepHoang_AI_Engineer.pdf#toolbar=1&navpanes=1&scrollbar=1" 
-            type="application/pdf" 
-            width="100%" 
-            height="800px">
-      <embed src="/cv/HiepHoang_AI_Engineer.pdf#toolbar=1&navpanes=1&scrollbar=1" 
-             type="application/pdf" 
-             width="100%" 
-             height="800px" />
-      <div class="pdf-fallback">
-        <h3>PDF Viewer Not Available</h3>
-        <p>Your browser cannot display this PDF directly.</p>
-        <div class="fallback-options">
-          <a href="/cv/HiepHoang_AI_Engineer.pdf" target="_blank" class="fallback-btn">
-            <i class="fa fa-external-link"></i> Open PDF in New Tab
-          </a>
-          <a href="/cv/HiepHoang_AI_Engineer.pdf" download class="fallback-btn">
-            <i class="fa fa-download"></i> Download PDF
-          </a>
-        </div>
+  <div class="cv-viewer">
+    <div class="cv-pages">
+      <div class="cv-page">
+        <img src="/cv/HiepHoang_AI_Engineer-images-0.jpg" alt="CV Page 1" class="cv-page-image">
       </div>
-    </object>
-  </div>
-
-  <!-- Method 3: PDF.js Viewer -->
-  <div class="cv-viewer" id="viewer-pdfjs" style="display: none;">
-    <iframe src="https://mozilla.github.io/pdf.js/web/viewer.html?file=https://hiepbk.github.io/cv/HiepHoang_AI_Engineer.pdf" 
-            width="100%" 
-            height="800px" 
-            style="border: none; border-radius: 8px;">
-      <p>Loading PDF.js viewer...</p>
-    </iframe>
+      
+      <div class="cv-page">
+        <img src="/cv/HiepHoang_AI_Engineer-images-1.jpg" alt="CV Page 2" class="cv-page-image">
+      </div>
+      
+      <div class="cv-page">
+        <img src="/cv/HiepHoang_AI_Engineer-images-2.jpg" alt="CV Page 3" class="cv-page-image">
+      </div>
+      
+      <div class="cv-page">
+        <img src="/cv/HiepHoang_AI_Engineer-images-3.jpg" alt="CV Page 4" class="cv-page-image">
+      </div>
+    </div>
+    
+    <div class="cv-footer">
+      <p><i class="fa fa-info-circle"></i> Click on any image to view it in full size</p>
+    </div>
   </div>
 </div>
 
@@ -96,23 +72,20 @@ image:
 .cv-actions {
   display: flex;
   justify-content: center;
-  gap: 15px;
+  gap: 20px;
   margin-bottom: 30px;
   flex-wrap: wrap;
 }
 
-.btn-download, .btn-view, .btn-toggle {
+.btn-download, .btn-view {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 20px;
+  padding: 12px 24px;
   text-decoration: none;
   border-radius: 25px;
   font-weight: bold;
   transition: all 0.2s;
-  border: none;
-  cursor: pointer;
-  font-size: 14px;
 }
 
 .btn-download {
@@ -135,16 +108,6 @@ image:
   transform: translateY(-2px);
 }
 
-.btn-toggle {
-  background: #6c757d;
-  color: white;
-}
-
-.btn-toggle:hover {
-  background: #545b62;
-  transform: translateY(-2px);
-}
-
 .cv-viewer {
   background: #f9f9f9;
   padding: 20px;
@@ -152,38 +115,80 @@ image:
   box-shadow: 0 2px 10px rgba(0,0,0,0.1);
 }
 
-.pdf-fallback {
-  text-align: center;
-  padding: 60px 20px;
-  background: #fff;
+.cv-pages {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  align-items: center;
+}
+
+.cv-page {
+  background: white;
+  padding: 10px;
   border-radius: 8px;
-  border: 2px dashed #ddd;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  transition: transform 0.2s, box-shadow 0.2s;
 }
 
-.pdf-fallback h3 {
-  color: #333;
-  margin-bottom: 15px;
+.cv-page:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 4px 15px rgba(0,0,0,0.2);
 }
 
-.fallback-options {
+.cv-page-image {
+  width: 100%;
+  max-width: 800px;
+  height: auto;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+
+.cv-page-image:hover {
+  transform: scale(1.02);
+}
+
+.cv-footer {
+  text-align: center;
   margin-top: 20px;
+  color: #666;
+  font-style: italic;
 }
 
-.fallback-btn {
-  display: inline-block;
-  margin: 10px;
-  padding: 12px 24px;
-  background: #007acc;
-  color: white;
-  text-decoration: none;
-  border-radius: 25px;
+/* Lightbox styles */
+.lightbox {
+  display: none;
+  position: fixed;
+  z-index: 1000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0,0,0,0.9);
+  cursor: pointer;
+}
+
+.lightbox img {
+  display: block;
+  margin: auto;
+  max-width: 95%;
+  max-height: 95%;
+  margin-top: 2.5%;
+  border-radius: 8px;
+}
+
+.lightbox .close {
+  position: absolute;
+  top: 15px;
+  right: 35px;
+  color: #f1f1f1;
+  font-size: 40px;
   font-weight: bold;
-  transition: all 0.2s;
+  cursor: pointer;
 }
 
-.fallback-btn:hover {
-  background: #005a99;
-  transform: translateY(-2px);
+.lightbox .close:hover {
+  color: #bbb;
 }
 
 @media (max-width: 768px) {
@@ -191,10 +196,8 @@ image:
     padding: 10px;
   }
   
-  .cv-viewer iframe,
-  .cv-viewer object,
-  .cv-viewer embed {
-    height: 600px;
+  .cv-viewer {
+    padding: 15px;
   }
   
   .cv-actions {
@@ -202,53 +205,61 @@ image:
     align-items: center;
   }
   
-  .btn-download, .btn-view, .btn-toggle {
+  .btn-download, .btn-view {
     width: 200px;
     justify-content: center;
+  }
+  
+  .cv-page {
+    padding: 5px;
+  }
+  
+  .lightbox img {
+    max-width: 98%;
+    max-height: 98%;
+    margin-top: 1%;
   }
 }
 </style>
 
+<!-- Lightbox for full-size viewing -->
+<div id="lightbox" class="lightbox" onclick="closeLightbox()">
+  <span class="close">&times;</span>
+  <img id="lightbox-img" src="" alt="CV Full Size">
+</div>
+
 <script>
-let currentViewer = 0;
-const viewers = ['viewer-google', 'viewer-direct', 'viewer-pdfjs'];
-const viewerNames = ['Google Docs Viewer', 'Direct PDF Viewer', 'PDF.js Viewer'];
-
-function toggleViewer() {
-  // Hide current viewer
-  document.getElementById(viewers[currentViewer]).style.display = 'none';
-  
-  // Move to next viewer
-  currentViewer = (currentViewer + 1) % viewers.length;
-  
-  // Show next viewer
-  document.getElementById(viewers[currentViewer]).style.display = 'block';
-  
-  // Update button text
-  const nextViewer = (currentViewer + 1) % viewers.length;
-  document.querySelector('.btn-toggle').innerHTML = 
-    '<i class="fa fa-refresh"></i> Try ' + viewerNames[nextViewer];
-  
-  console.log('Switched to: ' + viewerNames[currentViewer]);
-}
-
-// Initialize
 document.addEventListener('DOMContentLoaded', function() {
-  // Set initial button text
-  document.querySelector('.btn-toggle').innerHTML = 
-    '<i class="fa fa-refresh"></i> Try ' + viewerNames[1];
+  // Add click event to all CV images
+  const cvImages = document.querySelectorAll('.cv-page-image');
+  const lightbox = document.getElementById('lightbox');
+  const lightboxImg = document.getElementById('lightbox-img');
   
-  // Test if Google Docs viewer loads
-  setTimeout(function() {
-    const googleViewer = document.querySelector('#viewer-google iframe');
-    googleViewer.onload = function() {
-      console.log('Google Docs viewer loaded successfully');
-    };
-    googleViewer.onerror = function() {
-      console.log('Google Docs viewer failed, switching to direct viewer');
-      toggleViewer();
-    };
-  }, 2000);
+  cvImages.forEach(function(img) {
+    img.addEventListener('click', function() {
+      lightbox.style.display = 'block';
+      lightboxImg.src = this.src;
+      lightboxImg.alt = this.alt + ' - Full Size';
+    });
+  });
+  
+  // Close lightbox when clicking outside the image
+  lightbox.addEventListener('click', function(e) {
+    if (e.target === lightbox) {
+      closeLightbox();
+    }
+  });
+  
+  // Close with Escape key
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+      closeLightbox();
+    }
+  });
 });
+
+function closeLightbox() {
+  document.getElementById('lightbox').style.display = 'none';
+}
 </script>
 
