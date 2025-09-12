@@ -25,6 +25,7 @@ I am passionate about various aspects of Computer Vision and Robotics, including
   <!-- Project 1: 3D Object Detection -->
   <div class="project-card">
     <img src="../images/project/FocalFormer3D_crop.gif" alt="[ADAS] 3D Object Detection">
+    <div class="card-overlay">Click to see details</div>
     <div class="card-content">
       <h3><i class="fa fa-car icon"></i>[ADAS] 3D Object Detection</h3>
       <p>
@@ -39,6 +40,7 @@ I am passionate about various aspects of Computer Vision and Robotics, including
   <!-- Project 2: 3D Object Detection & SORT Tracking -->
   <div class="project-card">
     <img src="../images/project/jetson_3d_detection_tracking.gif" alt="[ADAS] 3D Object Detection Trackin (Edge Device)">
+    <div class="card-overlay">Click to see details</div>
     <div class="card-content">
       <h3><i class="fa fa-car icon"></i>[ADAS] 3D Object Detection & Tracking</h3>
       <p>
@@ -53,6 +55,7 @@ I am passionate about various aspects of Computer Vision and Robotics, including
   <!-- Project 3: 3D Point Cloud Scene Reconstruction -->
   <div class="project-card">
     <img src="../images/project/pc_recon.png" alt="[ADAS] 3D Point Cloud Scene Reconstruction">
+    <div class="card-overlay">Click to see details</div>
     <div class="card-content">
       <h3><i class="fa fa-car icon"></i>[ADAS] 3D Point Cloud Scene Reconstruction</h3>
       <p>
@@ -67,6 +70,7 @@ I am passionate about various aspects of Computer Vision and Robotics, including
   <!-- Project 4: 2D Panoptic / Semantic / Instance Segmentation -->
   <div class="project-card">
     <img src="../images/project/pan_seg.gif" alt="[ADAS] 2D Panoptic Segmentation">
+    <div class="card-overlay">Click to see details</div>
     <div class="card-content">
       <h3><i class="fa fa-car icon"></i>[ADAS] 2D Panoptic Segmentation</h3>
       <p>
@@ -81,6 +85,7 @@ I am passionate about various aspects of Computer Vision and Robotics, including
   <!-- Project 5: 2D Object Detection -->
   <div class="project-card">
     <img src="../images/project/2d_od.gif" alt="[ADAS] 2D Object Detection">
+    <div class="card-overlay">Click to see details</div>
     <div class="card-content">
       <h3><i class="fa fa-car icon"></i>[ADAS] 2D Object Detection</h3>
       <p>
@@ -95,6 +100,7 @@ I am passionate about various aspects of Computer Vision and Robotics, including
   <!-- Project 6: Human Intrusion Detection -->
   <div class="project-card">
     <img src="../images/project/human_intrusion.png" alt="[Smart Factory] 2D Multi-Cam Human Intrusion Detection">
+    <div class="card-overlay">Click to see details</div>
     <div class="card-content">
       <h3><i class="fa fa-shield icon"></i>[Smart Factory] Human Intrusion Detection</h3>
       <p>
@@ -115,6 +121,7 @@ I am passionate about various aspects of Computer Vision and Robotics, including
   <!-- Academic Project 1 -->
   <div class="project-card">
     <img src="../images/TSSTDET_abstract.png" alt="3D Object Detection with Spatial Shape Transformer">
+    <div class="card-overlay">Click to see details</div>
     <div class="card-content">
       <h3><i class="fa fa-graduation-cap icon"></i>3D Object Detection with Spatial Shape Transformer</h3>
       <p>
@@ -127,6 +134,7 @@ I am passionate about various aspects of Computer Vision and Robotics, including
   <!-- Academic Project 2 -->
   <div class="project-card">
     <img src="../images/3ONet_abstract.png" alt="3D Detector for Occluded Object">
+    <div class="card-overlay">Click to see details</div>
     <div class="card-content">
       <h3><i class="fa fa-graduation-cap icon"></i>3D Detector for Occluded Object</h3>
       <p>
@@ -139,6 +147,7 @@ I am passionate about various aspects of Computer Vision and Robotics, including
   <!-- Academic Project 3 -->
   <div class="project-card">
     <img src="../images/ESSDET_model.png" alt="Improving Object Shape of 3D Detector">
+    <div class="card-overlay">Click to see details</div>
     <div class="card-content">
       <h3><i class="fa fa-graduation-cap icon"></i>Improving Object Shape of 3D Detector</h3>
       <p>
@@ -151,6 +160,7 @@ I am passionate about various aspects of Computer Vision and Robotics, including
   <!-- Academic Project 4 -->
   <div class="project-card">
     <img src="../images/robot_matlab.gif" alt="Jumping Optimization for Quadruped Robot">
+    <div class="card-overlay">Click to see details</div>
     <div class="card-content">
       <h3><i class="fa fa-graduation-cap icon"></i>Jumping Optimization for Quadruped Robot</h3>
       <p>
