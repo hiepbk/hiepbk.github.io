@@ -11,9 +11,9 @@ image:
 
 {% include _toc.html %}
 
-<object data="http://yoursite.com/the.pdf" type="application/pdf" width="700px" height="700px">
-    <embed src="http://yoursite.com/the.pdf">
-        <p>This browser does not support PDFs. Please download the PDF to view it: <a href="http://yoursite.com/the.pdf">Download PDF</a>.</p>
+<object data="../cv/HiepHoang_AI_Engineer.pdf" type="application/pdf" width="700px" height="700px">
+    <embed src="../cv/HiepHoang_AI_Engineer.pdf">
+        <p>This browser does not support PDFs. Please download the PDF to view it: <a href="../cv/HiepHoang_AI_Engineer.pdf">Download PDF</a>.</p>
     </embed>
 </object>
 

@@ -13,10 +13,10 @@ image:
     <p>You can view my CV below or download the PDF version.</p>
     
     <div class="cv-actions">
-      <a href="/cv/HiepHoang_AI_Engineer.pdf" class="btn-download" download>
+      <a href="{{ site.url }}/cv/HiepHoang_AI_Engineer.pdf" class="btn-download" download>
         <i class="fa fa-download"></i> Download CV (PDF)
       </a>
-      <a href="/cv/HiepHoang_AI_Engineer.pdf" class="btn-view" target="_blank">
+      <a href="{{ site.url }}/cv/HiepHoang_AI_Engineer.pdf" class="btn-view" target="_blank">
         <i class="fa fa-external-link"></i> Open PDF in New Tab
       </a>
     </div>
@@ -24,25 +24,58 @@ image:
 
   <div class="cv-viewer">
     <div class="cv-pages">
+      <!-- Page 1 -->
       <div class="cv-page">
-        <img src="/cv/HiepHoang_AI_Engineer-images-0.jpg" alt="CV Page 1" class="cv-page-image">
+        <h3>Page 1</h3>
+        <img src="{{ site.url }}/cv/HiepHoang_AI_Engineer-images-0.jpg" 
+             alt="CV Page 1" 
+             class="cv-page-image"
+             onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+        <div class="error-msg" style="display:none; color:red; text-align:center; padding:20px;">
+          Image failed to load: {{ site.url }}/cv/HiepHoang_AI_Engineer-images-0.jpg
+        </div>
       </div>
       
+      <!-- Page 2 -->
       <div class="cv-page">
-        <img src="/cv/HiepHoang_AI_Engineer-images-1.jpg" alt="CV Page 2" class="cv-page-image">
+        <h3>Page 2</h3>
+        <img src="{{ site.url }}/cv/HiepHoang_AI_Engineer-images-1.jpg" 
+             alt="CV Page 2" 
+             class="cv-page-image"
+             onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+        <div class="error-msg" style="display:none; color:red; text-align:center; padding:20px;">
+          Image failed to load: {{ site.url }}/cv/HiepHoang_AI_Engineer-images-1.jpg
+        </div>
       </div>
       
+      <!-- Page 3 -->
       <div class="cv-page">
-        <img src="/cv/HiepHoang_AI_Engineer-images-2.jpg" alt="CV Page 3" class="cv-page-image">
+        <h3>Page 3</h3>
+        <img src="{{ site.url }}/cv/HiepHoang_AI_Engineer-images-2.jpg" 
+             alt="CV Page 3" 
+             class="cv-page-image"
+             onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+        <div class="error-msg" style="display:none; color:red; text-align:center; padding:20px;">
+          Image failed to load: {{ site.url }}/cv/HiepHoang_AI_Engineer-images-2.jpg
+        </div>
       </div>
       
+      <!-- Page 4 -->
       <div class="cv-page">
-        <img src="/cv/HiepHoang_AI_Engineer-images-3.jpg" alt="CV Page 4" class="cv-page-image">
+        <h3>Page 4</h3>
+        <img src="{{ site.url }}/cv/HiepHoang_AI_Engineer-images-3.jpg" 
+             alt="CV Page 4" 
+             class="cv-page-image"
+             onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+        <div class="error-msg" style="display:none; color:red; text-align:center; padding:20px;">
+          Image failed to load: {{ site.url }}/cv/HiepHoang_AI_Engineer-images-3.jpg
+        </div>
       </div>
     </div>
     
     <div class="cv-footer">
       <p><i class="fa fa-info-circle"></i> Click on any image to view it in full size</p>
+      <p style="font-size:12px; color:#999;">Debug: Site URL = {{ site.url }}</p>
     </div>
   </div>
 </div>
@@ -118,27 +151,30 @@ image:
 .cv-pages {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 30px;
   align-items: center;
 }
 
 .cv-page {
   background: white;
-  padding: 10px;
+  padding: 20px;
   border-radius: 8px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-  transition: transform 0.2s, box-shadow 0.2s;
+  width: 100%;
+  max-width: 800px;
 }
 
-.cv-page:hover {
-  transform: translateY(-5px);
-  box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+.cv-page h3 {
+  text-align: center;
+  color: #333;
+  margin-bottom: 15px;
+  font-size: 18px;
 }
 
 .cv-page-image {
   width: 100%;
-  max-width: 800px;
   height: auto;
+  border: 1px solid #ddd;
   border-radius: 4px;
   cursor: pointer;
   transition: transform 0.2s;
@@ -153,42 +189,6 @@ image:
   margin-top: 20px;
   color: #666;
   font-style: italic;
-}
-
-/* Lightbox styles */
-.lightbox {
-  display: none;
-  position: fixed;
-  z-index: 1000;
-  left: 0;
-  top: 0;
-  width: 100%;
-  height: 100%;
-  background-color: rgba(0,0,0,0.9);
-  cursor: pointer;
-}
-
-.lightbox img {
-  display: block;
-  margin: auto;
-  max-width: 95%;
-  max-height: 95%;
-  margin-top: 2.5%;
-  border-radius: 8px;
-}
-
-.lightbox .close {
-  position: absolute;
-  top: 15px;
-  right: 35px;
-  color: #f1f1f1;
-  font-size: 40px;
-  font-weight: bold;
-  cursor: pointer;
-}
-
-.lightbox .close:hover {
-  color: #bbb;
 }
 
 @media (max-width: 768px) {
@@ -211,55 +211,33 @@ image:
   }
   
   .cv-page {
-    padding: 5px;
-  }
-  
-  .lightbox img {
-    max-width: 98%;
-    max-height: 98%;
-    margin-top: 1%;
+    padding: 15px;
   }
 }
 </style>
 
-<!-- Lightbox for full-size viewing -->
-<div id="lightbox" class="lightbox" onclick="closeLightbox()">
-  <span class="close">&times;</span>
-  <img id="lightbox-img" src="" alt="CV Full Size">
-</div>
-
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-  // Add click event to all CV images
-  const cvImages = document.querySelectorAll('.cv-page-image');
-  const lightbox = document.getElementById('lightbox');
-  const lightboxImg = document.getElementById('lightbox-img');
+  console.log('CV page loaded');
+  console.log('Site URL:', '{{ site.url }}');
   
-  cvImages.forEach(function(img) {
+  // Check if images load
+  const images = document.querySelectorAll('.cv-page-image');
+  images.forEach((img, index) => {
+    img.onload = function() {
+      console.log('Image ' + (index + 1) + ' loaded successfully');
+    };
+    img.onerror = function() {
+      console.log('Image ' + (index + 1) + ' failed to load:', this.src);
+    };
+  });
+  
+  // Simple click to open in new tab
+  images.forEach(function(img) {
     img.addEventListener('click', function() {
-      lightbox.style.display = 'block';
-      lightboxImg.src = this.src;
-      lightboxImg.alt = this.alt + ' - Full Size';
+      window.open(this.src, '_blank');
     });
   });
-  
-  // Close lightbox when clicking outside the image
-  lightbox.addEventListener('click', function(e) {
-    if (e.target === lightbox) {
-      closeLightbox();
-    }
-  });
-  
-  // Close with Escape key
-  document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape') {
-      closeLightbox();
-    }
-  });
 });
-
-function closeLightbox() {
-  document.getElementById('lightbox').style.display = 'none';
-}
 </script>
 
