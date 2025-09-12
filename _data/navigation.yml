@@ -3,14 +3,14 @@
 - title: Home
   url: /"/"/
 
-- title: Blog
-  url: /blog/
-
 - title: Projects
   url: /projects/
 
 - title: Publications
   url: /publications/
+
+- title: Blog
+  url: /blog/
 
 - title: CV
   url: /cv/

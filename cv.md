@@ -13,7 +13,7 @@ image:
     <p>You can view my CV below or download it directly.</p>
     
     <div class="cv-actions">
-      <a href="/cv/HiepHoang_AI_Engineer.pdf" class="btn-download" target="_blank">
+      <a href="/cv/HiepHoang_AI_Engineer.pdf" class="btn-download" download>
         <i class="fa fa-download"></i> Download CV (PDF)
       </a>
       <a href="/cv/HiepHoang_AI_Engineer.pdf" class="btn-view" target="_blank">
@@ -23,14 +23,17 @@ image:
   </div>
 
   <div class="cv-viewer">
-    <iframe src="/cv/HiepHoang_AI_Engineer.pdf" 
-            width="100%" 
-            height="800px" 
-            style="border: none; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
-      <p>Your browser does not support PDFs. 
-         <a href="/cv/HiepHoang_AI_Engineer.pdf" target="_blank">Download the PDF</a> instead.
-      </p>
-    </iframe>
+    <object data="/cv/HiepHoang_AI_Engineer.pdf" type="application/pdf" width="100%" height="800px">
+      <embed src="/cv/HiepHoang_AI_Engineer.pdf" type="application/pdf" width="100%" height="800px" />
+      <div class="pdf-fallback">
+        <p>It appears your browser doesn't support PDF viewing.</p>
+        <p>No worries! You can:</p>
+        <ul>
+          <li><a href="/cv/HiepHoang_AI_Engineer.pdf" target="_blank"><strong>Open PDF in new tab</strong></a></li>
+          <li><a href="/cv/HiepHoang_AI_Engineer.pdf" download><strong>Download PDF directly</strong></a></li>
+        </ul>
+      </div>
+    </object>
   </div>
 </div>
 
@@ -103,12 +106,40 @@ image:
   box-shadow: 0 2px 10px rgba(0,0,0,0.1);
 }
 
+.pdf-fallback {
+  text-align: center;
+  padding: 40px;
+  background: #fff;
+  border-radius: 8px;
+  border: 2px dashed #ddd;
+}
+
+.pdf-fallback ul {
+  list-style: none;
+  padding: 0;
+}
+
+.pdf-fallback li {
+  margin: 10px 0;
+}
+
+.pdf-fallback a {
+  color: #007acc;
+  text-decoration: none;
+  font-weight: bold;
+}
+
+.pdf-fallback a:hover {
+  text-decoration: underline;
+}
+
 @media (max-width: 768px) {
   .cv-container {
     padding: 10px;
   }
   
-  .cv-viewer iframe {
+  .cv-viewer object,
+  .cv-viewer embed {
     height: 600px;
   }
   
@@ -123,4 +154,22 @@ image:
   }
 }
 </style>
+
+<script>
+// Additional fallback for browsers that don't support object/embed
+document.addEventListener('DOMContentLoaded', function() {
+  // Check if PDF viewing is supported
+  setTimeout(function() {
+    const object = document.querySelector('object');
+    if (object && object.clientHeight === 0) {
+      // If object failed to load, show fallback
+      object.style.display = 'none';
+      const fallback = document.querySelector('.pdf-fallback');
+      if (fallback) {
+        fallback.style.display = 'block';
+      }
+    }
+  }, 1000);
+});
+</script>
 
