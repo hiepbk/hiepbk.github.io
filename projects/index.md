@@ -6,35 +6,19 @@ tags: [Jekyll, theme, responsive, portfolio]
 image: 
 ---
 
-<div class="highlight-box text-center">
-  <h2 class="text-gradient">🚀 Research Interests</h2>
-  <p>I am passionate about various aspects of Computer Vision and Robotics, including:</p>
-  
-  <div style="display: flex; justify-content: space-around; flex-wrap: wrap; margin-top: 1.5em;">
-    <div class="info-card" style="flex: 1; min-width: 250px; margin: 0.5em;">
-      <i class="fa fa-cube" style="font-size: 2em; color: #3498db; margin-bottom: 0.5em;"></i>
-      <h3>2D/3D Object Detection & Tracking</h3>
-      <p>Advanced detection and tracking algorithms for real-world applications</p>
-    </div>
-    <div class="info-card" style="flex: 1; min-width: 250px; margin: 0.5em;">
-      <i class="fa fa-th" style="font-size: 2em; color: #e74c3c; margin-bottom: 0.5em;"></i>
-      <h3>Panoptic & Semantic Segmentation</h3>
-      <p>Comprehensive scene understanding and pixel-level classification</p>
-    </div>
-    <div class="info-card" style="flex: 1; min-width: 250px; margin: 0.5em;">
-      <i class="fa fa-cloud" style="font-size: 2em; color: #f39c12; margin-bottom: 0.5em;"></i>
-      <h3>Point Cloud Reconstruction</h3>
-      <p>3D scene reconstruction from multi-modal sensor data</p>
-    </div>
-  </div>
-</div>
+{% include _toc.html %}
+
+## Research Interests
+
+I am passionate about various aspects of Computer Vision and Robotics, including:
+
+- <i class="fa fa-cube"></i> **2D/3D Object Detection & Tracking**
+- <i class="fa fa-th"></i> **Panoptic & Semantic Segmentation**
+- <i class="fa fa-cloud"></i> **Point Cloud Reconstruction**
 
 ---
 
-<div class="text-center" style="margin: 3em 0;">
-  <h2 class="text-gradient">🏭 Production Projects</h2>
-  <p style="font-size: 1.1em; color: #666; margin-bottom: 2em;">Real-world applications deployed in industrial environments</p>
-</div>
+## Production Projects
 
 <div class="project-cards">
 
@@ -130,10 +114,7 @@ image:
 
 </div>
 
-<div class="text-center" style="margin: 3em 0;">
-  <h2 class="text-gradient">🎓 Academia Research Projects</h2>
-  <p style="font-size: 1.1em; color: #666; margin-bottom: 2em;">Published research contributions to the scientific community</p>
-</div>
+## Academia Research Projects
 
 <div class="project-cards">
 
