@@ -1,6 +1,6 @@
 # Site wide configuration
 
-title: Hoang Anh Hiep
+title: HIEP A.HOANG
 locale: en_US
 url:
 
@@ -26,7 +26,7 @@ kramdown:
 
 # Site owner
 owner:
-  name: HOANG ANH HIEP
+  name: HIEP A.HOANG
   avatar: avatar.jpeg
   # bio: "Describe your self."
   email: hiepbk.97@gmail.com
