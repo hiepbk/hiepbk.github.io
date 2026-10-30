@@ -51,9 +51,9 @@ for (const { x, y } of cells) {
     const words = (host.dataset.text ?? '').split(' ');
     const DEPTH = 3; // voxels per letter stroke, front to back
     const WORD_COLORS: [number[], number[]][] = [
-      [[30, 58, 138], [47, 91, 234]],   // ANH: navy → blue
-      [[109, 40, 217], [168, 85, 247]], // HIEP: purple
-      [[13, 148, 136], [34, 197, 194]], // HOANG: teal
+      [[109, 40, 217], [168, 85, 247]], // ANH: purple
+      [[5, 150, 105], [52, 211, 153]],  // HIEP: green
+      [[30, 58, 138], [47, 91, 234]],   // HOANG: navy → blue
     ];
     const widest = Math.max(...words.map((w) => layoutText(w).cols));
     const R = (widest + 3) / (2 * Math.sqrt(3)); // prism apothem: each face fits the widest word
