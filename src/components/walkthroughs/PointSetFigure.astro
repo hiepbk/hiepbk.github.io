@@ -1,0 +1,174 @@
+---
+// "A LiDAR scan is a point set": one real car from the home-page PandaSet scan, its points flying into the
+// rows of an N × 3 tensor, the rows being shuffled (same car), then half the points removed (shorter
+// tensor, still a car). The car is cut out of the scan with its 3D box at build time.
+import { loadCar, farthestPointSample } from '../../lib/walkthroughData';
+
+const N = 128;
+// Farthest point sampling: well-spread points, and any prefix still looks like the car
+const points = farthestPointSample(loadCar(), N);
+---
+<canvas class="wt-canvas pointset-canvas" data-points={JSON.stringify(points)}
+  role="img" aria-label="A car's LiDAR points stored as rows of an N × 3 tensor; shuffling the rows or removing points still gives the same car"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../lib/figureClock';
+  type P = [number, number, number];
+  // Main message per beat (shown in red at the top), then a status line under each title
+  const HEADLINE = [
+    'Each point becomes one row of an N × 3 matrix',
+    'Shuffle the points: same point cloud, different matrix',
+    'Fewer points: lower resolution, smaller matrix — still the same car',
+  ];
+  const CAR_NOTE = (n: number) => [`${n} points`, 'same points — same car', `${n / 2} points — lower resolution, still a car`];
+  const TENSOR_NOTE = ['one row per point', 'rows shuffled → different matrix', 'fewer rows'];
+  // Shorter status lines for narrow screens (the headline carries the full message)
+  const CAR_NOTE_SHORT = (n: number) => [`${n} points`, 'same points', `${n / 2} points`];
+  const TENSOR_NOTE_SHORT = ['1 row per point', 'rows shuffled', 'fewer rows'];
+
+  document.querySelectorAll<HTMLCanvasElement>('.pointset-canvas').forEach((canvas) => {
+    const pts: P[] = JSON.parse(canvas.dataset.points!);
+    const ctx = canvas.getContext('2d')!;
+    const N = pts.length, KEEP = N / 2;
+
+    // Deterministic shuffle of the rows
+    let seed = 11;
+    const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const perm = pts.map((_, i) => i);
+    for (let i = N - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [perm[i], perm[j]] = [perm[j], perm[i]]; }
+    const slotAfterShuffle = new Array<number>(N);
+    perm.forEach((row, slot) => (slotAfterShuffle[row] = slot));
+    // Rows kept in beat 3: the first half of the farthest-point order; packed in their shuffled order
+    const compact = new Array<number>(N).fill(-1);
+    perm.filter((row) => row < KEEP).forEach((row, k) => (compact[row] = k));
+
+    // Per-column ranges, for the cell shading
+    const lo = [0, 1, 2].map((c) => Math.min(...pts.map((p) => p[c])));
+    const hi = [0, 1, 2].map((c) => Math.max(...pts.map((p) => p[c])));
+    const hue = (i: number) => 200 + (130 * i) / N; // identity colour of point i, blue → violet → pink
+
+    const T = { fly: 0, shuffle: 4.2, drop: 7.8, end: 11.6 };
+    const BEATS = [T.fly, T.shuffle, T.drop];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.shuffle ? 0 : t < T.drop ? 1 : 2;
+
+      // Layout: car on the left, tensor on the right
+      const narrow = W < 520;
+      const tensorW = narrow ? 84 : 110;
+      const tx = W - tensorW - (narrow ? 8 : 40), top = 92, rowsH = H - top - 6;
+      const rowH = rowsH / N;
+      const carCx = (tx - 30) / 2, carCy = H * 0.76;
+      const S = Math.min(narrow ? (tx - 16) / 5.4 : (tx - 60) / 7, H / 4.2);
+
+      // Car in a gentle 3D sway
+      const a = -0.55 + 0.18 * Math.sin(time * 0.6);
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const carXY = (p: P) => {
+        const u = p[0] * ca - p[1] * sa, v = p[0] * sa + p[1] * ca;
+        return [carCx + u * S, carCy - p[2] * S + v * S * 0.35] as const;
+      };
+
+      const shuffle = ease(ramp(t, T.shuffle + 0.3, T.shuffle + 1.8));
+      const drop = ease(ramp(t, T.drop + 0.3, T.drop + 1.6));
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const nNow = Math.round(N - (N - KEEP) * drop);
+
+      // Headline of the current beat, in red across the top
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = dark ? '#ff6b6b' : '#dc2626';
+      ctx.fillText(HEADLINE[beat], W / 2, 16, W - 8);
+
+      // Titles with a status line that changes per beat (highlighted once something has changed)
+      ctx.globalAlpha = fadeAll;
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText('Raw point cloud', carCx, 46);
+      ctx.textAlign = 'right';
+      ctx.fillText(`Tensor ${nNow} × 3`, tx + tensorW, 46);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.textAlign = 'center';
+      ctx.fillText((narrow ? CAR_NOTE_SHORT : CAR_NOTE)(N)[beat], carCx, 64);
+      ctx.textAlign = 'right';
+      ctx.fillText((narrow ? TENSOR_NOTE_SHORT : TENSOR_NOTE)[beat], tx + tensorW, 64);
+      ctx.textAlign = 'center';
+      ctx.font = `500 11px "IBM Plex Mono", monospace`;
+      ctx.fillStyle = faint;
+      const cellW = (tensorW - 10) / 3;
+      ['x', 'y', 'z'].forEach((c, k) => ctx.fillText(c, tx + 10 + cellW * (k + 0.5), 86));
+
+      for (let i = 0; i < N; i++) {
+        const kept = i < KEEP;
+        const arrive = ease(ramp(t, 0.2 + i * 0.022, 0.75 + i * 0.022));
+        const gone = kept ? 0 : drop;
+        // Row slot: original → shuffled → packed
+        let slot = i + (slotAfterShuffle[i] - i) * shuffle;
+        if (kept) slot += (compact[i] - slotAfterShuffle[i]) * drop;
+        const ry = top + slot * rowH;
+        const alpha = (1 - gone) * fadeAll;
+
+        // Tensor row: identity tick + three shaded cells
+        if (arrive > 0.98 && alpha > 0.01) {
+          ctx.globalAlpha = alpha;
+          ctx.fillStyle = `hsl(${hue(i)} 75% 55%)`;
+          ctx.fillRect(tx, ry, 6, Math.max(1, rowH - 0.6));
+          for (let k = 0; k < 3; k++) {
+            const f = (pts[i][k] - lo[k]) / (hi[k] - lo[k] || 1);
+            ctx.fillStyle = dark ? `hsl(222 45% ${22 + f * 45}%)` : `hsl(222 55% ${88 - f * 50}%)`;
+            ctx.fillRect(tx + 10 + cellW * k, ry, cellW - 2, Math.max(1, rowH - 0.6));
+          }
+        }
+
+        // Point in the car (stays put), and its copy flying to its row
+        const [px, py] = carXY(pts[i]);
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = `hsl(${hue(i)} 75% 55%)`;
+        ctx.beginPath(); ctx.arc(px, py, 2.6, 0, Math.PI * 2); ctx.fill();
+        if (arrive > 0 && arrive < 0.98) {
+          const fx = px + (tx + 3 - px) * arrive, fy = py + (ry + rowH / 2 - py) * arrive;
+          ctx.beginPath(); ctx.arc(fx, fy, 2.2, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.shuffle - 0.5); });
+    if (still) { frame(T.shuffle - 0.5); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

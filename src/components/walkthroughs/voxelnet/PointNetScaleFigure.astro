@@ -1,0 +1,237 @@
+---
+// PointNet does not scale as-is. Beat 1: one object, n = 1,024 points → shared MLP → n × 1024 activation → max →
+// one global vector. Beat 2: a whole LiDAR scan (~100k points): the same activation is 100× taller, and memory and
+// compute grow 100×. Beat 3: one max over the whole scene gives one vector for all five cars — no locations.
+// Counts are per scan, float32, PointNet classification network with both T-Nets:
+//   input T-Net 3·64 + 64·128 + 128·1024, MLP 3·64 + 64·64, feature T-Net 64·64 + 64·128 + 128·1024,
+//   MLP 64·64 + 64·128 + 128·1024 ≈ 0.43 M multiply-adds per point (the per-point layers dominate).
+import { loadScene, every, cm } from '../../../lib/walkthroughFiguresA';
+
+const { points, boxes } = loadScene();
+const R = 32; // half-width of the BEV view, metres
+const inView = points.filter((p) => !p.ground && Math.abs(p.x) < R && Math.abs(p.y) < R);
+const bev = every(inView, Math.max(1, Math.round(inView.length / 5000))).map((p) => [cm(p.x), cm(p.y)]);
+const bevBoxes = boxes.map((b) => ({ c: [b.center[0], b.center[1]], w: b.size[0], l: b.size[1], yaw: b.yaw }));
+const data = { bev, boxes: bevBoxes, r: R };
+---
+<canvas class="wt-canvas pn-scale-canvas" data-pns={JSON.stringify(data)}
+  role="img" aria-label="PointNet on one object turns 1,024 points into a 1,024 by 1,024 activation; on a whole LiDAR scan of about 100,000 points the same activation is a hundred times taller, with a hundred times the memory and compute, and a single max over the scene gives one vector for all five cars"></canvas>
+
+<style>
+  canvas.wt-canvas.pn-scale-canvas { height: 380px; }
+  @media (max-width: 600px) { canvas.wt-canvas.pn-scale-canvas { height: 330px; } }
+</style>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  import { drawBlock, drawArrow, iconPalette } from '../../../lib/figureIcons';
+  type Pns = { bev: [number, number][]; boxes: { c: [number, number]; w: number; l: number; yaw: number }[]; r: number };
+
+  const HEADLINE = [
+    'PointNet on one object: 1,024 points → a 1,024 × 1024 activation → one vector',
+    'A whole LiDAR scan: ~100k points → the activation, memory and compute grow 100×',
+    'One max over the whole scene: one vector for all five cars — where is each car?',
+  ];
+  const HEADLINE_SHORT = ['One object: 1,024 points', 'Whole scan: ~100k points, 100× cost', 'One vector for five cars'];
+  const N0 = 1024, N1 = 100000;
+  const MAC_PER_POINT = 0.43e6; // see the header comment
+  const fmtN = (n: number) => Math.round(n).toLocaleString('en-US');
+  const mem = (n: number) => (n * 1024 * 4) / 1e6;       // MB of one n × 1024 float32 activation
+  const gmac = (n: number) => (n * MAC_PER_POINT) / 1e9;
+
+  document.querySelectorAll<HTMLCanvasElement>('.pn-scale-canvas').forEach((canvas) => {
+    const d: Pns = JSON.parse(canvas.dataset.pns!);
+    const ctx = canvas.getContext('2d')!;
+    // The best-observed car = the box holding most BEV points
+    const inBox = (p: [number, number], b: Pns['boxes'][number], m = 0.15) => {
+      const dx = p[0] - b.c[0], dy = p[1] - b.c[1], c = Math.cos(-b.yaw), s = Math.sin(-b.yaw);
+      const v = dx * c - dy * s, u = dx * s + dy * c;
+      return Math.abs(v) < b.w / 2 + m && Math.abs(u) < b.l / 2 + m;
+    };
+    const boxOf = d.bev.map((p) => d.boxes.findIndex((b) => inBox(p, b)));
+    const counts = d.boxes.map((_, k) => boxOf.filter((v) => v === k).length);
+    const hero = counts.indexOf(Math.max(...counts));
+    const CAR_HUE = [200, 265, 330, 30, 150];
+
+    const T = { one: 0, scan: 6, scene: 13.5, end: 21 };
+    const BEATS = [T.one, T.scan, T.scene];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const pal = iconPalette();
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.scan ? 0 : t < T.scene ? 1 : 2;
+      const narrow = W < 520;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const grow = ease(ramp(t, T.scan + 0.4, T.scan + 3.4));      // 0 → 1: one object → whole scan
+      const scene = ease(ramp(t, T.scene + 0.3, T.scene + 1.6));
+      const n = N0 + (N1 - N0) * grow;
+
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+
+      // Left: the scan in BEV, with the cost bars below. Right: shared MLP → activation → max → vector.
+      const side = narrow ? 6 : 20, top = 80;
+      const statsH = narrow ? 58 : 66;
+      const mapS = Math.min(narrow ? W * 0.44 : W * 0.36, H - top - statsH - 14);
+      // The view zooms out from the car to the whole scan as n grows
+      const zoom = ease(ramp(t, T.scan + 0.2, T.scan + 2.2));
+      const hc = d.boxes[hero].c, half = 3.5 + (d.r - 3.5) * zoom;
+      const cx0 = hc[0] * (1 - zoom), cy0 = hc[1] * (1 - zoom);
+      const mx = side, my = top, sc = mapS / (2 * half);
+      const toXY = (p: [number, number]) => [mx + mapS / 2 - (p[1] - cy0) * sc, my + mapS / 2 - (p[0] - cx0) * sc] as const; // x forward = up
+
+      ctx.globalAlpha = fadeAll;
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(grow < 0.5 ? 'Input: one car' : 'Input: the whole scan', mx + mapS / 2, 46);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(`n = ${fmtN(n)} points`, mx + mapS / 2, 64);
+
+      ctx.save();
+      ctx.beginPath(); ctx.rect(mx, my, mapS, mapS); ctx.clip();
+      // Points: the hero car always; the rest fade in with the scan
+      for (let i = 0; i < d.bev.length; i++) {
+        const k = boxOf[i];
+        const isHero = k === hero;
+        const al = isHero ? 1 : grow;
+        if (al < 0.01) continue;
+        ctx.globalAlpha = fadeAll * al;
+        ctx.fillStyle = scene > 0.01 && k >= 0 ? `hsl(${CAR_HUE[k % 5]} 75% ${dark ? 62 : 48}%)` : isHero && grow < 0.99 ? accent : (dark ? '#8fb3ff' : '#1e3a8a');
+        const [x, y] = toXY(d.bev[i]);
+        const ps = isHero && zoom < 0.6 ? 3 : k >= 0 ? 1.8 : 1.3;
+        ctx.fillRect(x - ps / 2, y - ps / 2, ps, ps);
+      }
+      // Car boxes in the last beat
+      if (scene > 0.01) {
+        d.boxes.forEach((b, k) => {
+          ctx.globalAlpha = fadeAll * scene;
+          ctx.strokeStyle = `hsl(${CAR_HUE[k % 5]} 75% ${dark ? 62 : 48}%)`; ctx.lineWidth = 1.5;
+          const c = Math.cos(b.yaw), s = Math.sin(b.yaw);
+          ctx.beginPath();
+          [[1, 1], [1, -1], [-1, -1], [-1, 1]].forEach(([a, e], j) => {
+            const lx = (a * b.w) / 2, ly = (e * b.l) / 2;
+            const p: [number, number] = [b.c[0] + lx * c - ly * s, b.c[1] + lx * s + ly * c];
+            const [x, y] = toXY(p);
+            if (j) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+          });
+          ctx.closePath(); ctx.stroke();
+        });
+      }
+
+      ctx.restore();
+
+      // Cost bars under the map: linear scale, full width = the whole scan
+      const bx = mx, bw = mapS, by = my + mapS + 14;
+      const bar = (y: number, label: string, v: number, vmax: number, unit: string) => {
+        ctx.globalAlpha = fadeAll;
+        ctx.textAlign = 'left';
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = text;
+        ctx.fillText(label, bx, y);
+        ctx.textAlign = 'right';
+        ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = grow > 0.5 ? red : heading;
+        ctx.fillText(`${v < 10 ? v.toFixed(2) : Math.round(v)} ${unit}`, bx + bw, y);
+        ctx.fillStyle = dark ? 'rgba(255,255,255,0.08)' : 'rgba(30,58,138,0.08)';
+        ctx.fillRect(bx, y + 5, bw, narrow ? 6 : 8);
+        ctx.fillStyle = grow > 0.5 ? red : accent;
+        ctx.fillRect(bx, y + 5, Math.max(1.5, (bw * v) / vmax), narrow ? 6 : 8);
+      };
+      bar(by + 6, narrow ? 'n × 1024 floats' : 'one n × 1024 activation', mem(n), mem(N1), 'MB');
+      bar(by + (narrow ? 32 : 38), narrow ? 'multiply-adds' : 'multiply-adds per scan', gmac(n), gmac(N1), 'G');
+
+      // Right: the network
+      const rx = mx + mapS + (narrow ? 12 : 40), rw = W - rx - side;
+      const k = Math.min(1, rw / 330);
+      const blkW = 60 * k, blkH = 46 * k;
+      const cy = top + (narrow ? 70 : 80);
+      const tX = rx + blkW + 34 * k, tW = 54 * k;
+      const tTop = top + 4, tMaxH = H - tTop - 30;
+      const tH = Math.max(3, tMaxH * (n / N1));
+      const poolX = tX + tW + 30 * k, vecX = poolX + blkW + 26 * k, vecW = Math.max(18, rw - (vecX - rx));
+
+      ctx.globalAlpha = fadeAll;
+      drawBlock(ctx, 'mlp', rx, cy - blkH / 2, blkW, blkH, pal, { shared: true, active: beat === 0 ? 0.6 : 0, label: 'shared MLP', sub: narrow ? undefined : '(64, …, 1024)', compact: narrow });
+      drawArrow(ctx, rx + blkW + 4, cy, tX - 4, Math.min(cy, tTop + tH / 2), pal);
+      // The n × 1024 activation, height ∝ n (the whole scan fills the column)
+      ctx.fillStyle = dark ? 'hsl(265 45% 30%)' : 'hsl(265 70% 86%)';
+      ctx.fillRect(tX, tTop, tW, tH);
+      ctx.strokeStyle = grow > 0.5 ? red : heading; ctx.lineWidth = 1.2;
+      ctx.strokeRect(tX, tTop, tW, tH);
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+      ctx.fillStyle = grow > 0.5 ? red : heading;
+      ctx.fillText(`${fmtN(n)} × 1024`, tX + tW / 2, Math.min(tTop + tH + 14, H - 14));
+      if (grow > 0.9) {
+        ctx.font = `700 ${narrow ? 12 : 15}px Sora, sans-serif`;
+        ctx.fillText('100×', tX + tW / 2, tTop + tH / 2 + 5);
+      }
+      // max → one vector
+      drawArrow(ctx, tX + tW + 4, Math.min(cy, tTop + tH / 2), poolX - 4, cy, pal);
+      drawBlock(ctx, 'maxpool', poolX, cy - blkH / 2, blkW, blkH, pal, { active: scene, label: 'max pool', compact: narrow });
+      drawArrow(ctx, poolX + blkW + 4, cy, vecX - 4, cy, pal);
+      const vH = 12 * Math.max(0.8, k);
+      for (let j = 0; j < 16; j++) {
+        const v = 0.3 + 0.6 * Math.abs(Math.sin(j * 1.7 + 0.4));
+        ctx.fillStyle = dark ? `hsl(265 55% ${18 + v * 50}%)` : `hsl(265 70% ${95 - v * 50}%)`;
+        ctx.fillRect(vecX + (j * vecW) / 16, cy - vH / 2, vecW / 16, vH);
+      }
+      ctx.strokeStyle = heading; ctx.lineWidth = 1; ctx.strokeRect(vecX, cy - vH / 2, vecW, vH);
+      ctx.fillStyle = heading; ctx.textAlign = 'center';
+      ctx.font = `500 ${narrow ? 9 : 10}px "IBM Plex Mono", monospace`;
+      ctx.fillText('1 × 1024', vecX + vecW / 2, cy + vH / 2 + 14);
+
+      // Last beat: five cars squeezed into the one vector
+      if (scene > 0.01) {
+        ctx.globalAlpha = fadeAll * scene;
+        d.boxes.forEach((_, j) => {
+          ctx.fillStyle = `hsl(${CAR_HUE[j % 5]} 75% ${dark ? 62 : 48}%)`;
+          ctx.fillRect(vecX + (j * vecW) / 5 + 1, cy - vH / 2 - 9, vecW / 5 - 2, 4);
+        });
+        ctx.fillStyle = red; ctx.textAlign = 'center';
+        ctx.font = `600 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+        const lines = narrow ? ['5 cars,', '1 vector:', 'where?'] : ['5 cars → 1 vector:', 'which car is where?'];
+        lines.forEach((l, i) => ctx.fillText(l, vecX + vecW / 2, cy + vH / 2 + 36 + i * (narrow ? 13 : 16), narrow ? vecW + 30 : 160));
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.scene + 2); });
+    if (still) { frame(T.scene + 2); return; }
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

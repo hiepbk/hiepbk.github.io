@@ -1,0 +1,290 @@
+---
+// "CNNs need a regular grid": the same real car voxelized for a 3D CNN. Beat 1 snaps the points into a
+// coarse 8³ grid (blocky), beat 2 refines it to 16³ and 32³ while the cell count grows as R³, beat 3
+// sweeps a dense 3×3×3 kernel over every cell although almost all of them are empty.
+import { loadCar, farthestPointSample } from '../../lib/walkthroughData';
+
+const L = 5.6; // edge of the cubic grid around the car, metres
+const car = loadCar();
+const occupied = (R: number) => {
+  const cells = new Set<string>();
+  for (const [u, v, z] of car) {
+    const ix = Math.min(R - 1, Math.floor(((u + L / 2) / L) * R));
+    const iy = Math.min(R - 1, Math.floor(((v + L / 2) / L) * R));
+    const iz = Math.min(R - 1, Math.floor((z / L) * R));
+    cells.add(`${ix},${iy},${iz}`);
+  }
+  return [...cells].map((k) => k.split(',').map(Number));
+};
+const grid = { L, points: farthestPointSample(car, 400), occ: { 8: occupied(8), 16: occupied(16), 32: occupied(32) } };
+---
+<canvas class="wt-canvas voxelgrid-canvas" data-grid={JSON.stringify(grid)}
+  role="img" aria-label="A car voxelized at 8³, 16³ and 32³: the number of cells grows as R³ while almost all of them stay empty, yet a dense 3D convolution visits every cell"></canvas>
+
+<script>
+  type P = [number, number, number];
+  type Grid = { L: number; points: P[]; occ: Record<string, number[][]> };
+
+  const RES = [8, 16, 32];
+  const HEADLINE = [
+    'A 3D CNN needs a regular grid: voxelize the points',
+    'Finer grid: the number of cells grows as R³',
+    'Most cells are empty, yet a dense 3D conv visits all of them',
+  ];
+  const fmt = (n: number) => n.toLocaleString('en-US');
+
+  document.querySelectorAll<HTMLCanvasElement>('.voxelgrid-canvas').forEach((canvas) => {
+    const g: Grid = JSON.parse(canvas.dataset.grid!);
+    const ctx = canvas.getContext('2d')!;
+    const L = g.L;
+
+    // Beats: voxelize at 8³ · refine to 16³ and 32³ (each held ~3 s) · dense kernel sweep
+    const T = { vox: 0, fine: 5.6, sweep: 12.6, end: 21.6 };
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    const reachedAt = [T.vox + 1.2, T.fine + 0.6, T.fine + 3.8]; // when each grid size (and its bar) appears
+    const resAt = (t: number) => (t < reachedAt[1] ? 8 : t < reachedAt[2] ? 16 : 32);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.fine ? 0 : t < T.sweep ? 1 : 2;
+      const R = resAt(t);
+      const cells = R ** 3;
+      const occ = g.occ[R];
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+
+      // Layout: voxel grid on the left, bar chart on the right
+      const narrow = W < 520;
+      const chartW = narrow ? 120 : 210;
+      const cx0 = W - chartW - (narrow ? 4 : 30);
+      const leftCx = cx0 / 2;
+      // Isometric cube: the floor spans L·S vertically and the height another L·S → fit 2·L·S under the text
+      const S = Math.min(cx0 / (2 * 0.87 * L * 1.1), (H - 92) / (2 * L));
+      const baseY = H - 8 - L * 0.5 * S;
+
+      // Headline, titles and status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, [T.vox, T.fine, T.sweep][beat] + 0.05, [T.vox, T.fine, T.sweep][beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText(HEADLINE[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(`Voxel grid ${R}³`, leftCx, 46);
+      ctx.fillText('Cells a 3D CNN processes', cx0 + chartW / 2, 46, chartW + 20);
+      const pct = ((100 * occ.length) / cells).toFixed(occ.length / cells < 0.1 ? 1 : 0);
+      // Kernel sweep in three phases: along x (one row), then y (a layer), then z (the whole volume).
+      // k* = kernel centre in cell units; e* = extent of the region visited so far.
+      const sweepP = ramp(t, T.sweep + 0.4, T.end - 0.8);
+      const tri = (x: number) => 1 - Math.abs((x % 2) - 1); // 0 → 1 → 0 zigzag
+      let kx = 1, ky = 1, kz = 1, ex = 3, ey = 3, ez = 3, axis: 'x' | 'y' | 'z' = 'x';
+      if (sweepP < 0.35) {
+        kx = 1 + ease(sweepP / 0.35) * (R - 3); ex = kx + 1.5;
+      } else if (sweepP < 0.65) {
+        const f = (sweepP - 0.35) / 0.3;
+        ky = 1 + ease(f) * (R - 3); kx = 1 + tri(f * 6) * (R - 3); ex = R; ey = ky + 1.5; axis = 'y';
+      } else {
+        const f = (sweepP - 0.65) / 0.35;
+        kz = 1 + ease(f) * (R - 3); kx = 1 + tri(f * 14) * (R - 3); ky = 1 + tri(f * 5) * (R - 3);
+        ex = R; ey = R; ez = kz + 1.5; axis = 'z';
+      }
+      const visited = sweepP <= 0 ? 0 : Math.round(Math.min(ex, R) * Math.min(ey, R) * Math.min(ez, R));
+      const leftNote = [`${fmt(512)} cells — blocky, detail lost`, `${R}³ = ${fmt(cells)} cells`, `only ${pct}% of the cells are occupied`][beat];
+      const rightNote = ['one bar per grid size', '×8 every time R doubles', `kernel visited ${fmt(visited)} / ${fmt(cells)}`][beat];
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(leftNote, leftCx, 64, cx0 - 8);
+      ctx.fillText(rightNote, cx0 + chartW / 2, 64, chartW + 20);
+
+      // Isometric projection with a gentle sway
+      const a = 0.12 * Math.sin(time * 0.5);
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const proj = (u: number, v: number, z: number) => {
+        const ur = u * ca - v * sa, vr = u * sa + v * ca;
+        return [leftCx + (ur - vr) * 0.87 * S, baseY + (ur + vr) * 0.5 * S - z * S] as const;
+      };
+      const poly = (pts: (readonly [number, number])[], fill: string) => {
+        ctx.fillStyle = fill;
+        ctx.beginPath();
+        pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+        ctx.closePath();
+        ctx.fill();
+      };
+
+      // Grid: floor lattice + cube outline
+      ctx.strokeStyle = faint;
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = fadeAll * 0.35;
+      ctx.beginPath();
+      for (let k = 0; k <= R; k++) {
+        const s = -L / 2 + (k * L) / R;
+        let p = proj(s, -L / 2, 0); ctx.moveTo(p[0], p[1]); p = proj(s, L / 2, 0); ctx.lineTo(p[0], p[1]);
+        p = proj(-L / 2, s, 0); ctx.moveTo(p[0], p[1]); p = proj(L / 2, s, 0); ctx.lineTo(p[0], p[1]);
+      }
+      ctx.stroke();
+      ctx.globalAlpha = fadeAll * 0.6;
+      ctx.beginPath();
+      for (const [u, v] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        const b = proj((u * L) / 2, (v * L) / 2, 0), tp = proj((u * L) / 2, (v * L) / 2, L);
+        ctx.moveTo(b[0], b[1]); ctx.lineTo(tp[0], tp[1]);
+      }
+      [[-1, -1], [1, -1], [1, 1], [-1, 1], [-1, -1]].forEach(([u, v], i) => {
+        const p = proj((u * L) / 2, (v * L) / 2, L);
+        i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]);
+      });
+      ctx.stroke();
+
+      // Beat 1 starts from the raw points, which then snap into voxels
+      const snap = ease(ramp(t, 1.0, 2.2));
+      if (snap < 1) {
+        ctx.globalAlpha = fadeAll * (1 - snap);
+        ctx.fillStyle = accent;
+        for (const [u, v, z] of g.points) {
+          const [x, y] = proj(u, v, z);
+          ctx.fillRect(x - 1.2, y - 1.2, 2.4, 2.4);
+        }
+      }
+
+      // Occupied voxels, drawn back to front
+      // New voxels grow in for 0.7 s whenever the resolution changes (beat 1 uses the snap instead)
+      const grow = R === 8 ? 1 : ease(ramp(t, reachedAt[RES.indexOf(R)], reachedAt[RES.indexOf(R)] + 0.7));
+      const cs = L / R, h = cs * 0.45 * grow;
+      // Side faces by outward normal (nu, nv) in the grid frame; shade = brightness
+      const faces = [
+        { nu: 1, nv: 0, k: 0.78 }, { nu: -1, nv: 0, k: 0.78 }, { nu: 0, nv: 1, k: 0.62 }, { nu: 0, nv: -1, k: 0.62 },
+      ];
+      const depth = (u: number, v: number, z: number) => u * ca - v * sa + u * sa + v * ca + z;
+      const list = occ
+        .map(([ix, iy, iz]) => [(ix + 0.5) * cs - L / 2, (iy + 0.5) * cs - L / 2, (iz + 0.5) * cs] as const)
+        .sort((p, q) => depth(...p) - depth(...q));
+      ctx.globalAlpha = fadeAll * snap;
+      const base = dark ? [255, 107, 107] : [229, 72, 77];
+      const shade = (k: number) => `rgb(${base.map((c) => Math.round(c * k)).join(',')})`;
+      for (const [u, v, z] of list) {
+        for (const f of faces) {
+          // Rotated normal; the viewer looks along -(1, 1), so faces with nx + ny > 0 are visible
+          if (f.nu * ca - f.nv * sa + f.nu * sa + f.nv * ca <= 0) continue;
+          const quad = f.nu
+            ? [proj(u + f.nu * h, v - h, z - h), proj(u + f.nu * h, v + h, z - h), proj(u + f.nu * h, v + h, z + h), proj(u + f.nu * h, v - h, z + h)]
+            : [proj(u - h, v + f.nv * h, z - h), proj(u + h, v + f.nv * h, z - h), proj(u + h, v + f.nv * h, z + h), proj(u - h, v + f.nv * h, z + h)];
+          poly(quad, shade(f.k));
+        }
+        poly([proj(u - h, v - h, z + h), proj(u + h, v - h, z + h), proj(u + h, v + h, z + h), proj(u - h, v + h, z + h)], shade(1));
+      }
+
+      // Beat 3: the region visited so far (translucent box) and the 3×3×3 kernel at its front
+      if (beat === 2 && sweepP > 0) {
+        const box = (u0: number, u1: number, v0: number, v1: number, z0: number, z1: number) => {
+          const c8 = [u0, u1].flatMap((u) => [v0, v1].flatMap((v) => [z0, z1].map((z) => proj(u, v, z))));
+          return [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]]
+            .map(([p, q]) => [c8[p], c8[q]] as const);
+        };
+        const toU = (c: number) => c * cs - L / 2, toZ = (c: number) => c * cs;
+        // Visited region
+        ctx.globalAlpha = fadeAll * 0.16;
+        ctx.fillStyle = accent;
+        const [ue, ve, ze] = [toU(Math.min(ex, R)), toU(Math.min(ey, R)), toZ(Math.min(ez, R))];
+        poly([proj(-L / 2, -L / 2, ze), proj(ue, -L / 2, ze), proj(ue, ve, ze), proj(-L / 2, ve, ze)], accent);
+        poly([proj(ue, -L / 2, 0), proj(ue, ve, 0), proj(ue, ve, ze), proj(ue, -L / 2, ze)], accent);
+        poly([proj(-L / 2, ve, 0), proj(ue, ve, 0), proj(ue, ve, ze), proj(-L / 2, ve, ze)], accent);
+        ctx.globalAlpha = fadeAll * 0.55;
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        box(-L / 2, ue, -L / 2, ve, 0, ze).forEach(([p, q]) => { ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); });
+        ctx.stroke();
+        // Kernel
+        const [u, v, z] = [toU(kx + 0.5), toU(ky + 0.5), toZ(kz + 0.5)], e = cs * 1.5;
+        ctx.globalAlpha = fadeAll;
+        ctx.strokeStyle = dark ? '#ffffff' : '#111827';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        box(u - e, u + e, v - e, v + e, z - e, z + e).forEach(([p, q]) => { ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); });
+        ctx.stroke();
+        // Arrow for the direction being swept
+        const d = cs * 6;
+        const tip = axis === 'x' ? proj(u + d, v, z) : axis === 'y' ? proj(u, v + d, z) : proj(u, v, z + d);
+        const from = proj(u, v, z);
+        ctx.beginPath(); ctx.moveTo(from[0], from[1]); ctx.lineTo(tip[0], tip[1]); ctx.stroke();
+        const ang = Math.atan2(tip[1] - from[1], tip[0] - from[0]);
+        ctx.beginPath();
+        ctx.moveTo(tip[0], tip[1]);
+        ctx.lineTo(tip[0] - 7 * Math.cos(ang - 0.45), tip[1] - 7 * Math.sin(ang - 0.45));
+        ctx.lineTo(tip[0] - 7 * Math.cos(ang + 0.45), tip[1] - 7 * Math.sin(ang + 0.45));
+        ctx.closePath();
+        ctx.fillStyle = dark ? '#ffffff' : '#111827';
+        ctx.fill();
+        ctx.font = `600 13px "IBM Plex Mono", monospace`;
+        ctx.textAlign = 'center';
+        ctx.fillText(axis, tip[0] + 12 * Math.cos(ang), tip[1] + 12 * Math.sin(ang) + 4);
+      }
+
+      // Bar chart: total cells per grid size (linear scale), the occupied part in red
+      const chartTop = 96, chartBottom = H - 34, barW = (chartW - 24) / 3;
+      RES.forEach((r, i) => {
+        const grow = ease(ramp(t, reachedAt[i], reachedAt[i] + 0.7));
+        if (grow <= 0) return;
+        const x = cx0 + 6 + i * (barW + 6);
+        const full = (chartBottom - chartTop) * (r ** 3 / 32768) * grow;
+        const occH = Math.max(1.5, full * (g.occ[r].length / r ** 3));
+        ctx.globalAlpha = fadeAll;
+        ctx.fillStyle = dark ? '#2a3445' : '#dfe4ec';
+        ctx.fillRect(x, chartBottom - full, barW, full);
+        ctx.fillStyle = red;
+        ctx.fillRect(x, chartBottom - occH, barW, occH);
+        ctx.fillStyle = text;
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+        ctx.textAlign = 'center';
+        ctx.fillText(fmt(Math.round(r ** 3 * grow)), x + barW / 2, chartBottom - full - 6);
+        ctx.fillStyle = faint;
+        ctx.fillText(`${r}³`, x + barW / 2, chartBottom + 14);
+      });
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = red;
+      ctx.fillRect(cx0 + 6, H - 12, 8, 8);
+      ctx.fillStyle = text;
+      ctx.fillText('occupied', cx0 + 18, H - 4);
+      ctx.fillStyle = dark ? '#2a3445' : '#dfe4ec';
+      ctx.fillRect(cx0 + 6 + chartW / 2, H - 12, 8, 8);
+      ctx.fillStyle = text;
+      ctx.fillText('empty', cx0 + 18 + chartW / 2, H - 4);
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.sweep - 0.3); });
+    if (still) { frame(T.sweep - 0.3); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame((ms - t0) / 1000); // authored at the target pace already, so FIGURE_SPEED is not applied
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

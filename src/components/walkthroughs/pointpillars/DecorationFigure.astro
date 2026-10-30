@@ -1,0 +1,229 @@
+---
+// PointPillars' point decoration, on one real pillar (0.16 × 0.16 m, full height) on the side of a parked car.
+// Beat 1: the raw points (x, y, z, r) — no binning along z. Beat 2: offsets to the arithmetic mean of the pillar's
+// points (x_c, y_c, z_c, as in VoxelNet). Beat 3: offsets to the pillar's x–y centre (x_p, y_p, new in PointPillars)
+// → D = 9 features per point. Left: the pillar seen from the side (x–z) and from the top (x–y).
+// The scan stores no reflectance, so r is shown as "–".
+import { loadScene } from '../../../lib/walkthroughFiguresA';
+
+const P = 0.16;
+const groups = new Map<string, number[][]>();
+for (const p of loadScene().points) {
+  if (p.ground || p.z > 2.2 || Math.abs(p.x - 7.59) > 2.6 || Math.abs(p.y - 6.45) > 1.1) continue; // the parked car at (7.6, 6.5)
+  const k = `${Math.floor(p.x / P)},${Math.floor(p.y / P)}`;
+  if (!groups.has(k)) groups.set(k, []);
+  groups.get(k)!.push([p.x, p.y, p.z]);
+}
+let key = '', pts: number[][] = [];
+const spread = (g: number[][]) => Math.max(...g.map((p) => p[2])) - Math.min(...g.map((p) => p[2]));
+for (const [k, g] of groups) if (g.length >= 6 && g.length <= 7 && (!pts.length || spread(g) > spread(pts))) { key = k; pts = g; }
+const r2 = (v: number) => Math.round(v * 100) / 100;
+pts = pts.map((p) => p.map(r2)).sort((a, b) => b[2] - a[2]);
+const [ix, iy] = key.split(',').map(Number);
+const centre = [(ix + 0.5) * P, (iy + 0.5) * P];
+const mean = [0, 1, 2].map((i) => pts.reduce((s, p) => s + p[i], 0) / pts.length);
+const rows = pts.map((p) => [p[0], p[1], p[2], 0, p[0] - mean[0], p[1] - mean[1], p[2] - mean[2], p[0] - centre[0], p[1] - centre[1]].map(r2));
+const data = { rows, corner: [r2(ix * P), r2(iy * P)], mean: mean.map(r2), centre: centre.map((v) => Math.round(v * 1000) / 1000) };
+---
+<canvas class="wt-canvas decoration-canvas" data-dec={JSON.stringify(data)}
+  role="img" aria-label="One pillar's points are listed with x, y, z and reflectance, then decorated with their offsets from the mean of the pillar's points and with their offsets from the pillar's centre, giving nine features per point"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  type Dec = { rows: number[][]; corner: number[]; mean: number[]; centre: number[] };
+
+  const P = 0.16;
+  const COLS = ['x', 'y', 'z', 'r', 'x_c', 'y_c', 'z_c', 'x_p', 'y_p'];
+  const HEADLINE = [
+    'A pillar: one x–y cell, all heights — each point keeps (x, y, z, r)',
+    'Add the offset to the mean of the pillar’s points: x_c, y_c, z_c',
+    'Add the offset to the pillar’s x–y centre: x_p, y_p → D = 9',
+  ];
+  const HEADLINE_SHORT = ['A pillar: one x–y cell, all heights', 'Offset to the mean: x_c, y_c, z_c', 'Offset to the centre: x_p, y_p → D = 9'];
+
+  document.querySelectorAll<HTMLCanvasElement>('.decoration-canvas').forEach((canvas) => {
+    const d: Dec = JSON.parse(canvas.dataset.dec!);
+    const ctx = canvas.getContext('2d')!;
+    const n = d.rows.length;
+    const hue = (i: number) => (200 + i * 61) % 360;
+    const zMin = Math.min(...d.rows.map((r) => r[2])), zMax = Math.max(...d.rows.map((r) => r[2]));
+
+    // Beats: raw · mean offsets · centre offsets
+    const T = { raw: 0, mean: 5.5, centre: 12, end: 19 };
+    const BEATS = [T.raw, T.mean, T.centre];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const teal = dark ? '#3fd6cc' : '#0d9488';
+      const cellBg = dark ? '#232b3a' : '#eef1f6';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.mean ? 0 : t < T.centre ? 1 : 2;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const narrow = W < 520;
+      const meanA = beat >= 1 ? ease(ramp(t, T.mean + 0.4, T.mean + 1.4)) : 0;
+      const cenA = beat >= 2 ? ease(ramp(t, T.centre + 0.4, T.centre + 1.4)) : 0;
+
+      // Layout: side view + top view of the pillar on the left, the n × 9 matrix on the right
+      const viewW = narrow ? 70 : 150;
+      const cw = narrow ? (W - viewW - 16) / 9 : Math.min(54, (W - viewW - 40) / 9);
+      const mx = W - 9 * cw - (narrow ? 4 : 10);
+      const top = narrow ? 92 : 104, rowH = narrow ? 20 : 26;
+
+      // Headline, titles, status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(narrow ? 'Pillar' : 'One pillar', viewW / 2 + 4, 46, viewW);
+      ctx.fillText(`${narrow ? '' : 'Decorated points: '}${n} × ${beat === 0 ? 4 : beat === 1 ? 7 : 9}`, mx + (9 * cw) / 2, 46, 9 * cw);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(narrow ? '0.16 m, all z' : '0.16 × 0.16 m, all heights', viewW / 2 + 4, 64, viewW + 10);
+      ctx.fillText(beat === 0 ? (narrow ? 'raw lidar point' : 'raw lidar point (r: not in this scan)') : beat === 1 ? (narrow ? '+ offsets to the mean' : '+ offset to the mean (VoxelNet)') : narrow ? '+ offsets to the centre' : '+ offset to the pillar centre (new)', mx + (9 * cw) / 2, 64, 9 * cw);
+
+      // Side view (x–z): the pillar is a tall narrow column
+      const sideH = H - top - (narrow ? 70 : 84);
+      const zs = sideH / (zMax - zMin + 0.3), colW = Math.max(narrow ? 30 : 50, P * zs);
+      const sx = (narrow ? 8 : 20) + (viewW - colW) / 2 - 10, sy = top;
+      const xs = colW / P;
+      const SPx = (x: number) => sx + (x - d.corner[0]) * xs, SPz = (z: number) => sy + sideH - (z - zMin + 0.15) * zs;
+      ctx.globalAlpha = fadeAll;
+      ctx.strokeStyle = faint;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.strokeRect(sx, sy - 6, colW, sideH + 6);
+      ctx.setLineDash([]);
+      ctx.fillStyle = faint;
+      ctx.font = `500 ${narrow ? 9 : 10}px "IBM Plex Sans", sans-serif`;
+      ctx.textAlign = 'left';
+      ctx.fillText('side', sx + colW + 4, sy + 6);
+      // Mean (cross) and its offset arrows
+      const mX = SPx(d.mean[0]), mZ = SPz(d.mean[2]);
+      d.rows.forEach((r, i) => {
+        const x = SPx(r[0]), y = SPz(r[2]);
+        if (meanA > 0) {
+          ctx.globalAlpha = fadeAll * meanA * 0.8;
+          ctx.strokeStyle = `hsl(${hue(i)} 70% 52%)`;
+          ctx.beginPath(); ctx.moveTo(mX, mZ); ctx.lineTo(mX + (x - mX) * meanA, mZ + (y - mZ) * meanA); ctx.stroke();
+        }
+        ctx.globalAlpha = fadeAll * ease(ramp(t, 0.2 + i * 0.12, 0.6 + i * 0.12));
+        ctx.fillStyle = `hsl(${hue(i)} 70% 52%)`;
+        ctx.beginPath(); ctx.arc(x, y, narrow ? 3 : 4, 0, 2 * Math.PI); ctx.fill();
+      });
+      if (meanA > 0) {
+        ctx.globalAlpha = fadeAll * meanA;
+        ctx.strokeStyle = heading; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(mX - 5, mZ - 5); ctx.lineTo(mX + 5, mZ + 5); ctx.moveTo(mX + 5, mZ - 5); ctx.lineTo(mX - 5, mZ + 5); ctx.stroke();
+        ctx.fillStyle = heading;
+        ctx.textAlign = 'left';
+        ctx.fillText('mean', sx + colW + 4, mZ + 4);
+      }
+      // Top view (x–y): the pillar's square, its centre and the x_p, y_p offsets
+      const tv = narrow ? 44 : 64, tx = sx + (colW - tv) / 2, ty = sy + sideH + (narrow ? 14 : 18);
+      const TPx = (x: number) => tx + ((x - d.corner[0]) / P) * tv, TPy = (y: number) => ty + tv - ((y - d.corner[1]) / P) * tv;
+      ctx.globalAlpha = fadeAll;
+      ctx.strokeStyle = faint; ctx.lineWidth = 1;
+      ctx.strokeRect(tx, ty, tv, tv);
+      ctx.fillStyle = faint;
+      ctx.textAlign = 'left';
+      ctx.fillText('top', tx + tv + 4, ty + 10);
+      const cX = TPx(d.centre[0]), cY = TPy(d.centre[1]);
+      d.rows.forEach((r, i) => {
+        const x = TPx(r[0]), y = TPy(r[1]);
+        if (cenA > 0) {
+          ctx.globalAlpha = fadeAll * cenA * 0.8;
+          ctx.strokeStyle = `hsl(${hue(i)} 70% 52%)`;
+          ctx.beginPath(); ctx.moveTo(cX, cY); ctx.lineTo(cX + (x - cX) * cenA, cY + (y - cY) * cenA); ctx.stroke();
+        }
+        ctx.globalAlpha = fadeAll;
+        ctx.fillStyle = `hsl(${hue(i)} 70% 52%)`;
+        ctx.beginPath(); ctx.arc(x, y, 2.5, 0, 2 * Math.PI); ctx.fill();
+      });
+      if (cenA > 0) {
+        ctx.globalAlpha = fadeAll * cenA;
+        ctx.fillStyle = teal;
+        ctx.beginPath(); ctx.moveTo(cX, cY - 5); ctx.lineTo(cX + 5, cY); ctx.lineTo(cX, cY + 5); ctx.lineTo(cX - 5, cY); ctx.closePath(); ctx.fill();
+        ctx.textAlign = 'left';
+        ctx.fillText('centre', tx + tv + 4, ty + tv / 2 + 8);
+      }
+
+      // Matrix: columns appear group by group
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+      const colA = (k: number) => (k < 4 ? 1 : k < 7 ? meanA : cenA);
+      COLS.forEach((c, k) => {
+        ctx.globalAlpha = fadeAll * colA(k);
+        ctx.fillStyle = k < 4 ? faint : k < 7 ? accent : teal;
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+        ctx.fillText(c, mx + cw * (k + 0.5), top - 9);
+      });
+      d.rows.forEach((r, i) => {
+        const y = top + i * rowH;
+        ctx.globalAlpha = fadeAll * ease(ramp(t, 0.2 + i * 0.12, 0.6 + i * 0.12));
+        ctx.fillStyle = `hsl(${hue(i)} 70% 52%)`;
+        ctx.fillRect(mx - 6, y + 1, 4, rowH - 2);
+        r.forEach((v, k) => {
+          const a = colA(k) * ease(ramp(t, 0.2 + i * 0.12, 0.6 + i * 0.12));
+          if (a <= 0) return;
+          ctx.globalAlpha = fadeAll * a;
+          ctx.fillStyle = cellBg;
+          ctx.fillRect(mx + cw * k, y + 1, cw - 2, rowH - 2);
+          ctx.fillStyle = k < 3 ? text : k === 3 ? faint : k < 7 ? accent : teal;
+          ctx.font = `500 ${narrow ? 8.5 : 11}px "IBM Plex Mono", monospace`;
+          const s = k === 3 ? '–' : narrow ? (k < 3 ? v.toFixed(1) : (v * 100).toFixed(0)) : v.toFixed(2);
+          ctx.fillText(s, mx + cw * (k + 0.5) - 1, y + rowH / 2 + 0.5, cw - 3);
+        });
+      });
+      // Bracket labels under the column groups
+      ctx.textBaseline = 'alphabetic';
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+      const by = top + n * rowH + (narrow ? 14 : 18);
+      ctx.globalAlpha = fadeAll; ctx.fillStyle = faint;
+      ctx.fillText(narrow ? 'raw' : 'raw point', mx + cw * 2, by);
+      ctx.globalAlpha = fadeAll * meanA; ctx.fillStyle = accent;
+      ctx.fillText(narrow ? 'to mean' : 'to the mean', mx + cw * 5.5, by);
+      ctx.globalAlpha = fadeAll * cenA; ctx.fillStyle = teal;
+      ctx.fillText(narrow ? 'to centre' : 'to the centre', mx + cw * 8, by);
+      if (narrow) { ctx.globalAlpha = fadeAll * meanA; ctx.fillStyle = faint; ctx.fillText('offsets in cm', mx + cw * 6.5, by + 14); }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.end - 1); });
+    if (still) { frame(T.end - 1); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

@@ -1,0 +1,245 @@
+---
+// SECOND's ground-truth sampling augmentation, on the real PandaSet scan (top view, 34 m × 20 m around the ego car).
+// Beat 1: offline, every ground-truth object is stored in a database together with the points inside its box
+// (here the 5 labelled cars of this scan; in training, every object of the training set). Beat 2: online, a few
+// objects are sampled and their points concatenated into the current cloud. Beat 3: a collision test removes the
+// samples whose boxes overlap an existing box. The paste spots (on the empty road) are chosen by hand.
+import { loadScene, pointsInBox, packBytes } from '../../../lib/walkthroughFiguresA';
+
+const X0 = -16, Y0 = -6, SW = 34, SH = 20, Q = 0.15;
+const { points, boxes } = loadScene();
+const scene: number[] = [];
+points.forEach((p, i) => {
+  if (p.x < X0 || p.x >= X0 + SW || p.y < Y0 || p.y >= Y0 + SH || i % (p.ground ? 9 : 4)) return;
+  scene.push((p.x - X0) / Q, (p.y - Y0) / Q);
+});
+// Database: each car's points in its box frame (u along the car, v across), subsampled
+const db = boxes.map((b) => {
+  const c = Math.cos(-b.yaw), s = Math.sin(-b.yaw);
+  const pts = pointsInBox(b);
+  const step = Math.max(1, Math.ceil(pts.length / 140));
+  const out: number[] = [];
+  pts.forEach((p, i) => {
+    if (i % step) return;
+    const dx = p.x - b.center[0], dy = p.y - b.center[1];
+    out.push((dx * s + dy * c + 3) * 40, (dx * c - dy * s + 1.5) * 40);
+  });
+  return { pts: packBytes(out), w: b.size[0], l: b.size[1] };
+});
+const gt = boxes.map((b) => ({ x: b.center[0], y: b.center[1], w: b.size[0], l: b.size[1], yaw: b.yaw }));
+// Samples: database index, target centre and heading of the car's long axis (rad, from +x). The last one collides.
+const samples = [
+  { k: 3, x: 5.0, y: 1.6, h: 0 },
+  { k: 0, x: 12.5, y: -1.6, h: Math.PI },
+  { k: 1, x: -3.5, y: 1.8, h: 0.04 },
+  { k: 4, x: 1.3, y: 5.6, h: 0.1 },
+];
+const data = { x0: X0, y0: Y0, sw: SW, sh: SH, q: Q, scene: packBytes(scene), db, gt, samples };
+---
+<canvas class="wt-canvas gt-sampling-canvas" data-gts={JSON.stringify(data)}
+  role="img" aria-label="Every labelled car and its points are stored in a database; during training a few cars are sampled from it and their points are pasted into the scan; a sample whose box overlaps an existing car is removed"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  type Box = { x: number; y: number; w: number; l: number; yaw: number };
+  type Gts = { x0: number; y0: number; sw: number; sh: number; q: number; scene: string; db: { pts: string; w: number; l: number }[]; gt: Box[]; samples: { k: number; x: number; y: number; h: number }[] };
+
+  const HEADLINE = [
+    'Offline: a database of every ground-truth object and its points',
+    'Online: sample objects and paste their points into the scan',
+    'Collision test: drop a sample whose box overlaps another box',
+  ];
+  const HEADLINE_SHORT = ['Database: objects + their points', 'Paste sampled objects into the scan', 'Collision test: drop overlaps'];
+  const dec = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+  document.querySelectorAll<HTMLCanvasElement>('.gt-sampling-canvas').forEach((canvas) => {
+    const d: Gts = JSON.parse(canvas.dataset.gts!);
+    const ctx = canvas.getContext('2d')!;
+    const scene = dec(d.scene);
+    const db = d.db.map((o) => { const b = dec(o.pts); const p: number[][] = []; for (let i = 0; i < b.length; i += 2) p.push([b[i] / 40 - 3, b[i + 1] / 40 - 1.5]); return { ...o, p }; });
+    // Long-axis heading of a scene box: the box frame's u axis is (−sin yaw, cos yaw)
+    const headOf = (b: Box) => Math.atan2(Math.cos(b.yaw), -Math.sin(b.yaw));
+    // Rectangle corners of a box (centre, length along heading h, width across)
+    const corners = (x: number, y: number, l: number, w: number, h: number) => [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => [x + (a * l) / 2 * Math.cos(h) - (b * w) / 2 * Math.sin(h), y + (a * l) / 2 * Math.sin(h) + (b * w) / 2 * Math.cos(h)]);
+    // Separating-axis test for two rectangles
+    const overlap = (A: number[][], B: number[][]) => {
+      for (const P of [A, B]) for (let i = 0; i < 4; i++) {
+        const [x1, y1] = P[i], [x2, y2] = P[(i + 1) % 4], nx = y2 - y1, ny = x1 - x2;
+        const pa = A.map(([x, y]) => x * nx + y * ny), pb = B.map(([x, y]) => x * nx + y * ny);
+        if (Math.max(...pa) < Math.min(...pb) || Math.max(...pb) < Math.min(...pa)) return false;
+      }
+      return true;
+    };
+    const gtRects = d.gt.map((b) => corners(b.x, b.y, b.l, b.w, headOf(b)));
+    const sampRects = d.samples.map((s) => corners(s.x, s.y, db[s.k].l, db[s.k].w, s.h));
+    const collides = sampRects.map((r, i) => gtRects.some((g) => overlap(r, g)) || sampRects.slice(0, i).some((g) => overlap(r, g)));
+    const kept = collides.filter((c) => !c).length;
+
+    // Beats: database · paste · collision test
+    const T = { db: 0, paste: 6.5, coll: 14.5, end: 21 };
+    const BEATS = [T.db, T.paste, T.coll];
+    const PASTE_DT = 1.7;
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const teal = dark ? '#3fd6cc' : '#0d9488';
+      const cellBg = dark ? '#1a2232' : '#eef1f6';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.paste ? 0 : t < T.coll ? 1 : 2;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const narrow = W < 520;
+
+      // Layout: scan on the left, database on the right (2 columns of thumbnails)
+      const dbW = narrow ? 92 : 170;
+      const top = narrow ? 82 : 90;
+      const sx0 = narrow ? 2 : 8, sw = W - dbW - sx0 - (narrow ? 10 : 24);
+      const s = Math.min(sw / d.sw, (H - top - 10) / d.sh);
+      const ox = sx0 + (sw - d.sw * s) / 2, oy = top + (H - top - 10 - d.sh * s) / 2;
+      const SP = (x: number, y: number) => [ox + (x - d.x0) * s, oy + (d.y0 + d.sh - y) * s] as const;
+      const dbx = W - dbW - 4, thW = (dbW - 8) / 2, thH = thW * 0.55;
+      const thumb = (k: number) => [dbx + (k % 2) * (thW + 8), top + Math.floor(k / 2) * (thH + (narrow ? 8 : 12))] as const;
+
+      // Headline, titles, status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(narrow ? 'Training scan' : 'Training scan (top view)', sx0 + sw / 2, 46, sw);
+      ctx.fillText(narrow ? 'Database' : 'GT database', dbx + dbW / 2, 46, dbW);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      const pasted = beat === 0 ? 0 : beat === 1 ? Math.min(d.samples.length, Math.max(0, Math.floor((t - T.paste - 0.6) / PASTE_DT) + 1)) : d.samples.length;
+      const nGt = d.gt.length + (beat === 2 && t > T.coll + 2.6 ? kept : pasted);
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(beat === 2 && t > T.coll + 2.6 ? (narrow ? `${nGt} objects` : `${d.gt.length} → ${nGt} objects in this scan`) : narrow ? `${nGt} boxes` : `${nGt} ground-truth boxes`, sx0 + sw / 2, 64, sw);
+      ctx.fillStyle = t > 1.2 ? accent : text;
+      ctx.fillText(narrow ? `${db.length} objects` : `${db.length} objects + their points`, dbx + dbW / 2, 64, dbW);
+
+      // Scan points
+      ctx.globalAlpha = fadeAll;
+      ctx.fillStyle = cellBg;
+      ctx.fillRect(ox, oy, d.sw * s, d.sh * s);
+      ctx.fillStyle = faint;
+      ctx.globalAlpha = fadeAll * 0.7;
+      for (let i = 0; i < scene.length; i += 2) ctx.fillRect(ox + scene[i] * d.q * s, oy + d.sh * s - scene[i + 1] * d.q * s, 1, 1);
+      // Ego car marker
+      ctx.globalAlpha = fadeAll;
+      const [ex, ey] = SP(0, 0);
+      ctx.fillStyle = heading;
+      ctx.beginPath(); ctx.arc(ex, ey, 3, 0, 2 * Math.PI); ctx.fill();
+
+      // Existing GT boxes
+      const poly = (pts: number[][], col: string, lw: number, dash: number[] = []) => {
+        ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.setLineDash(dash);
+        ctx.beginPath();
+        pts.forEach(([x, y], k) => { const p = SP(x, y); k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); });
+        ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
+      };
+      gtRects.forEach((r) => { ctx.globalAlpha = fadeAll; poly(r, teal, 1.5); });
+
+      // Database thumbnails (beat 1: each object flies from its box into the database)
+      db.forEach((o, k) => {
+        const [tx, ty] = thumb(k);
+        const fly = ease(ramp(t, 1.0 + k * 0.6, 1.8 + k * 0.6));
+        ctx.globalAlpha = fadeAll * (fly > 0 ? 1 : 0.4);
+        ctx.fillStyle = cellBg;
+        ctx.fillRect(tx, ty, thW, thH);
+        if (fly <= 0) return;
+        const g = d.gt[k], hd = headOf(g);
+        const ts = Math.min(thW / 6, thH / 3);
+        // Point positions: in the scene (fly = 0) → in the thumbnail (fly = 1)
+        ctx.fillStyle = teal;
+        for (const [u, v] of o.p) {
+          const [sxp, syp] = SP(g.x + u * Math.cos(hd) - v * Math.sin(hd), g.y + u * Math.sin(hd) + v * Math.cos(hd));
+          const txp = tx + thW / 2 + u * ts, typ = ty + thH / 2 - v * ts;
+          ctx.fillRect(sxp + (txp - sxp) * fly - 0.7, syp + (typ - syp) * fly - 0.7, 1.4, 1.4);
+        }
+        ctx.strokeStyle = teal; ctx.lineWidth = 1;
+        ctx.globalAlpha = fadeAll * fly;
+        ctx.strokeRect(tx + thW / 2 - (o.l / 2) * ts, ty + thH / 2 - (o.w / 2) * ts, o.l * ts, o.w * ts);
+      });
+
+      // Samples: highlighted in the database, then their points fly into the scan
+      d.samples.forEach((smp, i) => {
+        if (beat === 0) return;
+        const start = T.paste + 0.6 + i * PASTE_DT;
+        const fly = ease(ramp(t, start, start + 1.1));
+        if (t < start) return;
+        const o = db[smp.k], [tx, ty] = thumb(smp.k);
+        const ts = Math.min(thW / 6, thH / 3);
+        const gone = collides[i] && beat === 2 ? ease(ramp(t, T.coll + 1.6, T.coll + 2.6)) : 0;
+        const col = collides[i] && beat === 2 ? red : accent;
+        ctx.globalAlpha = fadeAll * (1 - gone);
+        ctx.fillStyle = col;
+        for (const [u, v] of o.p) {
+          const [sxp, syp] = SP(smp.x + u * Math.cos(smp.h) - v * Math.sin(smp.h), smp.y + u * Math.sin(smp.h) + v * Math.cos(smp.h));
+          const txp = tx + thW / 2 + u * ts, typ = ty + thH / 2 - v * ts;
+          ctx.fillRect(txp + (sxp - txp) * fly - 0.8, typ + (syp - typ) * fly - 0.8, 1.6, 1.6);
+        }
+        if (fly >= 1) poly(sampRects[i], col, 1.8, collides[i] && beat === 2 ? [4, 3] : []);
+        if (collides[i] && beat === 2 && gone < 1) {
+          // Cross over the rejected sample
+          const [cx, cy] = SP(smp.x, smp.y);
+          ctx.strokeStyle = red; ctx.lineWidth = 2.5;
+          ctx.beginPath(); ctx.moveTo(cx - 9, cy - 9); ctx.lineTo(cx + 9, cy + 9); ctx.moveTo(cx + 9, cy - 9); ctx.lineTo(cx - 9, cy + 9); ctx.stroke();
+          ctx.fillStyle = red;
+          ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.fillText(narrow ? 'collides' : 'collides → removed', cx, cy - 16);
+        }
+        // Mark the sampled thumbnail
+        ctx.globalAlpha = fadeAll * (beat === 1 ? 1 : 0.5);
+        ctx.strokeStyle = accent; ctx.lineWidth = 2;
+        ctx.strokeRect(tx - 1, ty - 1, thW + 2, thH + 2);
+      });
+
+      // Legend
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+      ctx.textAlign = 'left';
+      const ly = top + 3 * (thH + (narrow ? 8 : 12)) + 10;
+      ctx.fillStyle = teal; ctx.fillRect(dbx, ly - 8, 8, 8);
+      ctx.fillStyle = text; ctx.fillText(narrow ? 'labelled' : 'labelled in this scan', dbx + 12, ly, dbW - 12);
+      ctx.fillStyle = accent; ctx.fillRect(dbx, ly + 8, 8, 8);
+      ctx.fillStyle = text; ctx.fillText(narrow ? 'pasted' : 'pasted from the database', dbx + 12, ly + 16, dbW - 12);
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.coll + 1.2); });
+    if (still) { frame(T.coll + 1.2); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

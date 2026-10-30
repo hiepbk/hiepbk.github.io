@@ -1,0 +1,19 @@
+---
+import type { CollectionEntry } from 'astro:content';
+import { walkthroughCategories } from '../config';
+
+interface Props { note: CollectionEntry<'walkthroughs'> }
+const { note } = Astro.props;
+const n = note.data;
+const category = walkthroughCategories.find((c) => c.id === n.category)?.name;
+---
+<a class:list={['pub', 'note-card', { 'has-thumb': n.image }]} href={`/walkthroughs/${note.id}/`} data-category={n.category}>
+  {n.image && <div class="pub-thumb"><img src={n.image} alt="" loading="lazy" /></div>}
+  <div class="pub-body">
+    <span class="venue">{n.paper.venue}</span>
+    {category && <span class="tag">{category}</span>}
+    <h3 class="pub-title">{n.title}</h3>
+    <p class="pub-venue">{n.paper.title}</p>
+    <p class="note-summary">{n.summary}</p>
+  </div>
+</a>

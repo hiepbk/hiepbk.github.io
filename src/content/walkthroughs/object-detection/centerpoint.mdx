@@ -1,0 +1,259 @@
+---
+title: "CenterPoint: objects as points in bird's-eye view"
+category: object-detection
+order: 8
+summary: "Anchor boxes never fit a car that is turning. CenterPoint drops them: a heatmap finds object centres in BEV, a few small heads read off size, heading and velocity at each peak, and tracking becomes closest-point matching."
+date: 2026-10-30
+draft: true
+paper:
+  title: "Center-based 3D Object Detection and Tracking"
+  authors: "Tianwei Yin, Xingyi Zhou, Philipp Krähenbühl"
+  venue: CVPR 2021
+  links:
+    - name: arXiv
+      url: https://arxiv.org/abs/2006.11275
+    - name: Code
+      url: https://github.com/tianweiy/CenterPoint
+---
+
+import Figure from '../../../components/walkthroughs/Figure.astro';
+import CenterPointArchFigure from '../../../components/walkthroughs/centerpoint/CenterPointArchFigure.astro';
+import CenterHeatmapFigure from '../../../components/walkthroughs/centerpoint/CenterHeatmapFigure.astro';
+import CenterTrackingFigure from '../../../components/walkthroughs/centerpoint/CenterTrackingFigure.astro';
+import FivePointFigure from '../../../components/walkthroughs/centerpoint/FivePointFigure.astro';
+
+## Motivation & Main Contribution
+
+- Every detector so far in the series — VoxelNet, SECOND, PointPillars, PV-RCNN — places **anchor boxes**
+  on the BEV map. PointRCNN avoided anchors, but only with a costly point-based backbone.
+- CenterPoint keeps the standard backbones (**VoxelNet/SECOND-style sparse voxels** or **PointPillars**) and
+  changes only the **output representation**: an object is a **point** — its centre in BEV.
+- It brings the 2D detector **CenterNet** (objects as keypoints) to LiDAR.
+- **Main contributions:**
+  1. A **centre heatmap head** plus dense regression heads for size, height, heading and velocity.
+  2. A light **second stage** that reads features at five points on the box (centre and four side faces).
+  3. **Tracking by closest-point matching**, using a predicted velocity — no Kalman filter.
+- The switch from anchors to centres alone gives about +4 mAPH on Waymo for both backbones.
+
+## Challenges at the Time
+
+- **3D boxes are rotated; anchors are not.** Anchors come at fixed headings (e.g. 0° and 90°); a car turning
+  at 45° fits none of them well.
+- **More anchors are not a fix.** One template per heading adds compute and false positives.
+- **Target assignment is fiddly.** Anchor detectors use BEV IoU thresholds per class and per dataset
+  (e.g. 0.55 / 0.4 for vehicles, 0.5 / 0.35 for pedestrians on Waymo, following PV-RCNN).
+- **Very different shapes.** Bicycles are nearly flat, buses long, pedestrians tall — a few anchor sizes
+  cover them poorly.
+- **Two-stage refinement is slow.** PointNet-style RoI pooling (PointRCNN, PV-RCNN) costs a lot of time.
+
+## Naive Questions
+
+- **Why is a point better than a box?**
+  A point has no orientation, so there is nothing to align; heading becomes just another regressed value.
+- **How do you get a box from a point?**
+  Read size, height and heading from the regression maps at the peak's location.
+- **Do we still need NMS?**
+  Each local maximum is one object; the paper still applies NMS before the second stage.
+- **Why make the Gaussian bigger than in CenterNet?**
+  Objects in BEV are small and sparse, so a tiny peak gives almost no positive supervision.
+- **How can tracking be a nearest-neighbour search?**
+  The network predicts each object's velocity; move the current centres back one frame and match the closest track.
+- **Why a second stage if the first works?**
+  The centre feature may not see the object: LiDAR often only hits one side of a car.
+
+## Key Idea
+
+> **Key idea.** Represent each object by its centre in BEV: find centres as heatmap peaks, regress all
+> other box properties at the peak, and track by matching centres.
+
+- **Heatmap target.** For $K$ classes, a $K$-channel heatmap $\hat Y$; each ground-truth centre is rendered as a
+  2D Gaussian with radius
+
+$$
+\sigma = \max\big(f(wl),\, \tau\big), \qquad \tau = 2
+$$
+
+- $w, l$: box width and length; $f$: CornerNet's radius function; $\tau$: smallest allowed radius. Trained with focal loss.
+- **Final score** after the second stage — the geometric mean of the two stages:
+
+$$
+\hat Q_t = \sqrt{\hat Y_t \cdot \hat I_t}
+$$
+
+- $\hat Y_t$: first-stage heatmap score of object $t$; $\hat I_t$: second-stage IoU-guided confidence.
+
+<Figure>
+  <CenterHeatmapFigure />
+  <span slot="caption">CenterPoint's first stage on a real scan (bird's-eye view, 0.8 m cells for the illustration).
+  The heatmap shown is the training target — one Gaussian per car centre with the minimum radius $\tau = 2$ cells.
+  Each local maximum is one object; the box comes from reading the offset, height, size and heading maps at that one cell.</span>
+</Figure>
+
+## Dive into Model Architecture & Key Components
+
+<Figure>
+  <CenterPointArchFigure />
+  <span slot="caption">CenterPoint from raw points to boxes and tracks, laid out like the paper's Figure 2. Only the
+  output side is new: a heatmap and dense regression maps on the map view, peaks as objects, a light second stage and
+  closest-point tracking. One block per row of the pipeline table below; solid blocks are learned layers, dashed ones
+  fixed operations.</span>
+</Figure>
+
+### The pipeline, step by step
+
+1. **3D backbone** (unchanged from prior work): VoxelNet-style sparse voxels or PointPillars → map-view
+   features $M \in \mathbb{R}^{W \times L \times F}$.
+2. **First stage, dense heads**: a shared $3 \times 3$ conv + BN + ReLU, then one branch per output
+   (two $3 \times 3$ convs with BN + ReLU in between).
+3. **Decode**: take heatmap peaks; read the regression maps at each peak.
+4. **Second stage**: bilinear-sample $M$ at five points per box, concatenate, MLP → IoU-guided score and box refinement.
+5. **Tracking**: velocity-based greedy closest-point matching.
+
+> **Builds on.** CenterNet's keypoint heatmap (objects as points) from 2D detection; the backbones of
+> VoxelNet / SECOND and PointPillars ([walkthroughs 03](/walkthroughs/object-detection/voxelnet/),
+> [04](/walkthroughs/object-detection/second/), [05](/walkthroughs/object-detection/pointpillars/)).
+
+### Tensor shapes
+
+The pipeline, stage by stage:
+
+| Stage | Operation | Shape |
+|---|---|---|
+| Input | LiDAR points (current and previous sweep) | raw points |
+| 3D backbone | VoxelNet-style sparse voxels or PointPillars | map view $M$: $W \times L \times F$ |
+| Shared conv | $3 \times 3$ conv + BN + ReLU | $W \times L \times C$ |
+| Heatmap head | two $3 \times 3$ convs | $W \times L \times K$ |
+| Regression heads | two $3 \times 3$ convs per output | $W \times L \times 10$ (2 + 1 + 3 + 2 + 2) |
+| Peak decode | local maxima, read the maps at each peak | one box per peak |
+| Second stage | 5 bilinear features → MLP | score + refined box per box |
+| Tracking | back-project by $-v$, greedy closest match | tracks |
+
+The first-stage outputs at each BEV cell:
+
+| Output | Meaning | Channels | Loss |
+|---|---|---|---|
+| Heatmap $\hat Y$ | centre likelihood per class | $K$ | focal |
+| Offset $o$ | sub-voxel refinement of the centre | 2 | L1 |
+| Height $h_g$ | height above ground | 1 | L1 |
+| Size $s$ | 3D size, regressed in log space | 3 | L1 |
+| Heading | $(\sin\alpha, \cos\alpha)$ | 2 | L1 |
+| Velocity $v$ | BEV displacement to the previous frame | 2 | L1 |
+
+- All maps are $W \times L$, the size of $M$. Regression is supervised only at ground-truth centres.
+- Input settings — **Waymo**: range $[-75.2, 75.2]$ m in X and Y, $[-2, 4]$ m in Z; voxels $(0.1, 0.1, 0.15)$ m
+  (as in PV-RCNN), pillars $0.32 \times 0.32$ m. **nuScenes**: $[-51.2, 51.2]$ m, $[-5, 3]$ m; voxels
+  $(0.1, 0.1, 0.2)$ m, pillars $0.2 \times 0.2$ m.
+
+### The centre heatmap: why it beats anchors
+
+- No orientation to match → the backbone can learn rotation invariance; heading is regressed, not enumerated.
+- No IoU thresholds for assignment: one positive cell per object, at its centre.
+- Gains are largest where anchors struggle (Waymo val, LEVEL 2 mAPH):
+  - objects rotated 30°–45°: vehicles 45.4 → **51.6**, pedestrians 26.5 → **35.7** (Table 7);
+  - small pedestrians: 29.6 → **38.5** (Table 8).
+- nuScenes test shows the same pattern: the largest gains are on extreme shapes (+6.4 mAP bicycle, +7.0 construction vehicle).
+
+### Two-stage CenterPoint: five points, not a RoI
+
+- The box centre and the top and bottom face centres project to the same BEV point, so the second stage uses
+  the **centre + the four side-face centres** — five features from $M$ by bilinear interpolation.
+- Head: shared two-layer MLP (BN, ReLU, dropout 0.3), then two branches of three FC layers — score and box refinement.
+- Score target as in PV-RCNN: $I = \min(1, \max(0, 2\,\mathrm{IoU}_t - 0.5))$, binary cross-entropy;
+  box refinement with L1.
+
+> **Builds on.** PV-RCNN's IoU-guided score target and its Waymo settings
+> ([walkthrough 07](/walkthroughs/object-detection/pv-rcnn/)).
+- Training: 128 boxes per scene, 1:1 positive/negative, positive if IoU ≥ 0.55; inference on the top 500 after NMS.
+- Cost (Waymo val, VoxelNet backbone): first stage 71 ms; the surface-centre second stage adds **6 ms** and lifts
+  LEVEL 2 mAPH from 66.5 / 62.7 to 68.3 / 65.3 (vehicle / pedestrian, Table 9).
+- BEV features are enough: adding PV-RCNN's VSA voxel features keeps 68.3 / 65.2 but raises run time
+  from 77 ms to 98 ms (Table 10).
+
+<Figure>
+  <FivePointFigure />
+  <span slot="caption">The second stage on a real car. Five points of the first-stage box — its centre and the centres
+  of the four side faces — each read the map-view features $M$ by bilinear interpolation; an MLP on the concatenated
+  features refines the box and predicts $\hat I$, combined with the heatmap score as $\hat Q = \sqrt{\hat Y \cdot \hat I}$.
+  The box error and the scores are illustrative.</span>
+</Figure>
+
+### Velocity head and tracking
+
+- The velocity head needs two map-views (current and previous frame) and predicts the centre's displacement.
+- Tracking: move each current centre back by $-v$, then **greedily** match it to the closest track
+  (class-wise distance threshold); unmatched tracks survive up to $T = 3$ frames.
+- No hidden state, no motion model: tracking takes **1 ms**, vs. 73 ms for a Mahalanobis Kalman-filter tracker
+  (Table 12, nuScenes val).
+
+> **Builds on.** CenterTrack's offset-based tracking from 2D, and SORT's rule for keeping unmatched tracks.
+
+<Figure>
+  <CenterTrackingFigure />
+  <span slot="caption">Center-based tracking on an illustrative road scene. Two cars passing each other would be
+  swapped by plain closest-point matching; moving each detection back by its predicted velocity puts it next to its own
+  track. Detections are matched greedily in order of score, within a class-wise distance $\tau$; an unmatched detection
+  starts a new track, and an unmatched track survives up to $T = 3$ frames.</span>
+</Figure>
+
+## Conclusion
+
+### Results
+
+Waymo **test** set, LEVEL 2 (CenterPoint, Table 1):
+
+| Method | Vehicle mAP <span class="better-up">↑</span> | Vehicle mAPH <span class="better-up">↑</span> | Ped. mAP <span class="better-up">↑</span> | Ped. mAPH <span class="better-up">↑</span> |
+|---|---|---|---|---|
+| StarNet | 54.9 | 54.5 | 61.1 | 54.0 |
+| PointPillars | 55.6 | 55.1 | 55.9 | 45.1 |
+| PPBA | 59.6 | 59.1 | 63.0 | 55.8 |
+| RCD | 65.1 | 64.7 | – | – |
+| **CenterPoint** | **72.2** | **71.8** | **72.2** | **66.4** |
+
+nuScenes **test** set (Table 2):
+
+| Method | mAP <span class="better-up">↑</span> | NDS <span class="better-up">↑</span> | PKL <span class="better-down">↓</span> |
+|---|---|---|---|
+| PointPillars | 40.1 | 55.0 | 1.00 |
+| CVCNet | 55.3 | 64.4 | 0.92 |
+| PointPainting | 46.4 | 58.1 | 0.89 |
+| CBGS | 52.8 | 63.3 | 0.77 |
+| **CenterPoint** | **58.0** | **65.5** | **0.69** |
+
+Anchors vs. centres with the same backbone, Waymo val, LEVEL 2 mAPH (Table 5):
+
+| Backbone | Head | Vehicle <span class="better-up">↑</span> | Pedestrian <span class="better-up">↑</span> | Mean <span class="better-up">↑</span> |
+|---|---|---|---|---|
+| VoxelNet | anchor-based | 66.1 | 54.4 | 60.3 |
+| VoxelNet | **center-based** | **66.5** | **62.7** | **64.6** |
+| PointPillars | anchor-based | 64.1 | 50.8 | 57.5 |
+| PointPillars | **center-based** | **66.5** | 57.4 | 62.0 |
+
+Tracking, nuScenes (test: Table 4; val: Table 12):
+
+| Method | AMOTA (test) <span class="better-up">↑</span> | ID switches (test) <span class="better-down">↓</span> | Tracking time (val) <span class="better-down">↓</span> |
+|---|---|---|---|
+| AB3D | 15.1 | 9,027 | – |
+| Chiu et al. | 55.0 | 950 | – |
+| Kalman filter (M-KF) on CenterPoint detections | – | – | 73 ms |
+| **CenterPoint** (closest point) | **63.8** | **760** | **1 ms** |
+
+### Pros and Cons
+
+- **Pros**
+  - A point has no orientation: rotated objects and odd shapes stop being special cases; no anchor tuning.
+  - Works on top of standard backbones (VoxelNet, PointPillars) — only the head changes.
+  - Second stage for 6 ms; tracking for 1 ms, with no Kalman filter.
+- **Cons**
+  - The second stage reads only the 2D BEV map — no help on nuScenes' sparse 32-beam LiDAR.
+  - Small objects can occupy a single BEV cell (PointPillars pedestrians).
+  - Velocity needs two frames as input.
+
+### Future Work
+
+- Give refinement real 3D context without the cost of point-based RoI pooling.
+- Better features for sparse and small objects.
+
+### Next
+
+- [**Voxel R-CNN**](/walkthroughs/object-detection/voxel-rcnn/) — refinement from 3D voxel features, without
+  PV-RCNN's keypoints, at a fraction of its cost.

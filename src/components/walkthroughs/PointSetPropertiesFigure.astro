@@ -1,0 +1,435 @@
+---
+// "A point-set network must respect three properties", one panel each on the real car (128 points):
+// 1 · the same set listed in a different order (the first points fed are numbered), the output must stay "car";
+// 2 · a single point vs. its neighbours within a ball of radius r (computed here on the real points);
+// 3 · the car rotated and moved: the coordinates of a tracked point change, the class must not.
+import { loadCar, farthestPointSample } from '../../lib/walkthroughData';
+
+const N = 128;
+const R_BALL = 0.5; // metres
+const points = farthestPointSample(loadCar(), N);
+
+// Panel 2: a point in the middle of the car's side, and its neighbours within R_BALL
+const dist = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+const target = [-0.7, 0.85, 1.3];
+const centre = points.reduce((best, p, i) => (dist(p, target) < dist(points[best], target) ? i : best), 0);
+const neighbours = points.map((_, i) => i).filter((i) => i !== centre && dist(points[i], points[centre]) < R_BALL);
+// Principal axes of the neighbourhood (Jacobi on the 3 × 3 covariance): the two largest span the local
+// surface, the smallest is its normal. The figure shows the neighbours edge-on along these axes.
+const ball = [centre, ...neighbours].map((i) => points[i]);
+const mean = [0, 1, 2].map((k) => ball.reduce((s, p) => s + p[k], 0) / ball.length);
+const C = [0, 1, 2].map((a) => [0, 1, 2].map((b) => ball.reduce((s, p) => s + (p[a] - mean[a]) * (p[b] - mean[b]), 0) / ball.length));
+const V = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+for (let sweep = 0; sweep < 20; sweep++) {
+  for (const [p, q] of [[0, 1], [0, 2], [1, 2]]) {
+    if (Math.abs(C[p][q]) < 1e-12) continue;
+    const th = 0.5 * Math.atan2(2 * C[p][q], C[q][q] - C[p][p]), c = Math.cos(th), s = Math.sin(th);
+    for (let k = 0; k < 3; k++) { const a = C[k][p], b = C[k][q]; C[k][p] = c * a - s * b; C[k][q] = s * a + c * b; }
+    for (let k = 0; k < 3; k++) { const a = C[p][k], b = C[q][k]; C[p][k] = c * a - s * b; C[q][k] = s * a + c * b; }
+    for (let k = 0; k < 3; k++) { const a = V[k][p], b = V[k][q]; V[k][p] = c * a - s * b; V[k][q] = s * a + c * b; }
+  }
+}
+const axes = [0, 1, 2].sort((a, b) => C[b][b] - C[a][a]).map((k) => V.map((row) => Math.round(row[k] * 1000) / 1000));
+const spread = [0, 1, 2].map((k) => Math.sqrt(C[k][k])).sort((a, b) => b - a).map((v) => Math.round(v * 100) / 100);
+
+// Panel 3: the tracked point, the front-most point of the roof
+const tracked = points.reduce((best, p, i) => (p[2] > 1.3 && p[0] > points[best][0] ? i : best), 0);
+
+// N! as mantissa × 10^exponent
+let log10 = 0;
+for (let k = 2; k <= N; k++) log10 += Math.log10(k);
+const exponent = Math.floor(log10);
+const factorial = { mantissa: (10 ** (log10 - exponent)).toFixed(1), exponent };
+
+const data = { points, rBall: R_BALL, centre, neighbours, axes, spread, tracked, factorial };
+---
+<canvas class="wt-canvas properties-canvas" data-props={JSON.stringify(data)}
+  role="img" aria-label="Three properties of a point set, on a car: any listing order of its points must give the same output; a point's neighbours within a small ball carry the local shape; rotating and moving the car changes its coordinates but not its class"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../lib/figureClock';
+
+  type P = [number, number, number];
+  type Data = { points: P[]; rBall: number; centre: number; neighbours: number[]; axes: number[][]; spread: number[]; tracked: number; factorial: { mantissa: string; exponent: number } };
+
+  const HEADLINE = [
+    'Unordered: every listing of the points must give the same output',
+    'Interaction: a point alone says little — with its neighbours it forms a surface',
+    'Rigid motion: the coordinates change, the class must not',
+  ];
+  const HEADLINE_SHORT = ['Any order of the points → same output', 'Neighbours form the local surface', 'Rotate or move it: still a car'];
+  const HEADLINE_STILL = 'A point-set network must respect three properties';
+  const TITLES = ['1 · Unordered', '2 · Local structure', '3 · Rigid motion'];
+  const sub = (n: number) => String(n).replace(/\d/g, (d) => '₀₁₂₃₄₅₆₇₈₉'[+d]);
+  const sup = (n: number) => String(n).replace(/\d/g, (d) => '⁰¹²³⁴⁵⁶⁷⁸⁹'[+d]);
+
+  document.querySelectorAll<HTMLCanvasElement>('.properties-canvas').forEach((canvas) => {
+    const d: Data = JSON.parse(canvas.dataset.props!);
+    const ctx = canvas.getContext('2d')!;
+    const pts = d.points, N = pts.length, K = d.neighbours.length;
+    const isNb = new Set(d.neighbours);
+
+    // Two listings of the same set: as sampled, then a fixed-seed shuffle. order[k] = id of the k-th point fed.
+    let seed = 7;
+    const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const orderA = pts.map((_, i) => i);
+    const orderB = [...orderA];
+    for (let i = N - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [orderB[i], orderB[j]] = [orderB[j], orderB[i]]; }
+    const rankA = new Array<number>(N), rankB = new Array<number>(N);
+    orderA.forEach((id, k) => (rankA[id] = k));
+    orderB.forEach((id, k) => (rankB[id] = k));
+    const SHOWN = 5; // first points of the listing drawn as a numbered path
+
+    // Rigid poses of panel 3: rotation about the vertical axis + translation (metres)
+    const POSES = [{ th: 0, tx: 3, ty: 0.5 }, { th: 0.9, tx: 3.6, ty: -0.1 }, { th: -0.65, tx: 2.4, ty: 1.1 }];
+    const place = (p: P, th: number, tx: number, ty: number): P =>
+      [p[0] * Math.cos(th) - p[1] * Math.sin(th) + tx, p[0] * Math.sin(th) + p[1] * Math.cos(th) + ty, p[2]];
+
+    // Timeline (s): one beat per panel, every state held ≥ 3 s
+    const T = { p1: 0, p2: 7.6, p3: 17.6, end: 29 };
+    const BEATS = [T.p1, T.p2, T.p3];
+    const RELIST = T.p1 + 3.6; // listing A → B
+    const GROW = T.p2 + 3.2; // ball grows around the point
+    const EDGE = GROW + 2.4; // neighbours turned edge-on
+    const MOVES = [T.p3 + 2.4, T.p3 + 6.8]; // pose A → B, B → C
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    // Oblique view as in Figure 1 (fixed, so that only panel 3 moves)
+    const A = -0.55, ca = Math.cos(A), sa = Math.sin(A);
+    const view = (p: P) => [p[0] * ca - p[1] * sa, -p[2] + (p[0] * sa + p[1] * ca) * 0.35] as const;
+    // Fit a set of view coordinates into a box → scale + offset
+    const fit = (list: P[], w: number, h: number) => {
+      const xy = list.map(view);
+      const x0 = Math.min(...xy.map((q) => q[0])), x1 = Math.max(...xy.map((q) => q[0]));
+      const y0 = Math.min(...xy.map((q) => q[1])), y1 = Math.max(...xy.map((q) => q[1]));
+      const S = Math.min(w / (x1 - x0), h / (y1 - y0));
+      return { S, ox: -(x0 + x1) / 2, oy: -(y0 + y1) / 2 };
+    };
+    const allPoses = POSES.flatMap((q) => pts.map((p) => place(p, q.th, q.tx, q.ty)));
+    const axesPts: P[] = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]];
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    // still = reduced motion: every panel in its changed state, all at full opacity
+    function frame(time: number, still = false) {
+      const t = still ? T.end - 1 : time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.p2 ? 0 : t < T.p3 ? 1 : 2;
+      const narrow = W < 520;
+      const fadeAll = still ? 1 : 1 - ramp(t, T.end - 0.5, T.end);
+      const beatIn = ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+
+      // Headline
+      ctx.globalAlpha = still ? 1 : fadeAll * beatIn;
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText(still ? HEADLINE_STILL : (narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+
+      // Panels: side by side; on narrow screens one at a time (a carousel), unless the frame is still
+      const carousel = narrow && !still;
+      const pw = carousel ? W : W / 3;
+      const small = narrow; // short texts
+      const dot = pw < 180 ? 0.6 : 1; // smaller points in the three-up narrow still frame
+      const carTop = narrow ? 80 : 84, carH = H * (narrow ? 0.33 : 0.36);
+      const readTop = carTop + carH + (narrow ? 14 : 20);
+
+      for (let i = 0; i < 3; i++) {
+        let x0 = i * pw, alpha: number;
+        if (carousel) {
+          if (i !== beat) continue;
+          x0 = 0;
+          alpha = fadeAll * beatIn;
+        } else if (still) {
+          alpha = 1;
+        } else {
+          // Active panel at full opacity, the others dimmed
+          const on = i === beat ? ease(ramp(t, BEATS[i], BEATS[i] + 0.4)) : i === beat - 1 ? 1 - ease(ramp(t, BEATS[beat], BEATS[beat] + 0.4)) : 0;
+          alpha = fadeAll * (0.28 + 0.72 * on);
+          if (i === 0 && beat === 0 && t < 0.4) alpha = fadeAll * (0.28 + 0.72 * ease(ramp(t, 0, 0.4)));
+        }
+        const cx = x0 + pw / 2;
+        ctx.globalAlpha = alpha;
+
+        // Separator between panels
+        if (!carousel && i > 0) {
+          ctx.globalAlpha = fadeAll * 0.5;
+          ctx.strokeStyle = faint;
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(x0, 40); ctx.lineTo(x0, H - 10); ctx.stroke();
+          ctx.globalAlpha = alpha;
+        }
+
+        // Title + status line
+        const changed = i === 0 ? t >= RELIST : i === 1 ? t >= GROW : t >= MOVES[0];
+        ctx.textAlign = 'center';
+        ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+        ctx.fillStyle = heading;
+        ctx.fillText(TITLES[i], cx, 46, pw - 8);
+        const NOTE = [
+          small ? ['one listing', 'another listing'] : [`one listing of the ${N} points`, 'another listing — same set'],
+          small ? ['one point alone', `${K} neighbours`, 'a flat surface'] : ['one point alone: just (x, y, z)', `${K} neighbours within r = ${d.rBall} m`, 'together: a flat surface + its normal'],
+          small ? ['original pose', 'rotated + moved'] : ['original pose', 'rotated + moved'],
+        ][i];
+        ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = changed ? accent : text;
+        ctx.fillText(NOTE[i === 1 && t >= EDGE ? 2 : changed ? 1 : 0], cx, 64, pw - 8);
+
+        if (i === 0) drawUnordered(t, cx, pw, carTop, carH, readTop, alpha);
+        else if (i === 1) drawLocal(t, cx, pw, carTop, carH, readTop, alpha);
+        else drawRigid(t, cx, pw, carTop, carH, readTop, alpha);
+      }
+
+      // Carousel dots
+      if (carousel) {
+        ctx.globalAlpha = fadeAll;
+        for (let i = 0; i < 3; i++) {
+          ctx.fillStyle = i === beat ? heading : faint;
+          ctx.beginPath(); ctx.arc(W / 2 + (i - 1) * 14, H - 6, i === beat ? 3.2 : 2.4, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      ctx.globalAlpha = 1;
+
+      // ——— Panel 1: the same set, listed in two orders ———
+      function drawUnordered(t: number, cx: number, pw: number, top: number, h: number, readTop: number, alpha: number) {
+        const f = fit(pts, pw - 24, h);
+        const S = f.S, cy = top + h / 2;
+        const xy = (p: P) => { const [x, y] = view(p); return [cx + (x + f.ox) * S, cy + (y + f.oy) * S] as const; };
+        const relist = ease(ramp(t, RELIST, RELIST + 0.9));
+        // Points coloured by their position in the listing (blue = fed first, pink = fed last)
+        pts.forEach((p, id) => {
+          const rank = rankA[id] + (rankB[id] - rankA[id]) * relist;
+          const [x, y] = xy(p);
+          ctx.fillStyle = `hsl(${200 + (130 * rank) / N} 75% 55%)`;
+          ctx.beginPath(); ctx.arc(x, y, 2.4 * dot, 0, Math.PI * 2); ctx.fill();
+        });
+        // The first points fed, joined in order and numbered; each vertex slides to the new listing
+        const path = Array.from({ length: SHOWN }, (_, k) => {
+          const a = xy(pts[orderA[k]]), b = xy(pts[orderB[k]]);
+          return [a[0] + (b[0] - a[0]) * relist, a[1] + (b[1] - a[1]) * relist] as const;
+        });
+        ctx.strokeStyle = heading;
+        ctx.lineWidth = 1.2;
+        ctx.globalAlpha = alpha * 0.7;
+        ctx.beginPath();
+        path.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+        ctx.stroke();
+        ctx.globalAlpha = alpha;
+        ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+        ctx.textAlign = 'center';
+        path.forEach(([x, y], k) => {
+          ctx.fillStyle = heading;
+          ctx.beginPath(); ctx.arc(x, y, 3.4 * dot, 0, Math.PI * 2); ctx.fill();
+          ctx.fillText(String(k + 1), x + 7, y - 6);
+        });
+
+        // Readout: the listing, the number of listings, the required output
+        const order = relist < 0.5 ? orderA : orderB;
+        const lh = narrow ? 17 : 22;
+        ctx.font = `500 ${narrow ? 10 : 13}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = t >= RELIST ? accent : text;
+        const list = order.slice(0, narrow ? 2 : 3).map((id) => `p${sub(id + 1)}`).join(', ');
+        ctx.fillText(`(${list}, …, p${sub(order[N - 1] + 1)})`, cx, readTop + 10, pw - 8);
+        ctx.font = `500 ${narrow ? 9.5 : 12}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = text;
+        ctx.fillText(`1 of ${N}! ≈ ${d.factorial.mantissa}·10${sup(d.factorial.exponent)} orders`, cx, readTop + 10 + lh, pw - 8);
+        outputPill(cx, readTop + 10 + 2.2 * lh, 'output: car', t >= RELIST ? 'same output' : null);
+      }
+
+      // ——— Panel 2: one point vs. its neighbourhood ———
+      function drawLocal(t: number, cx: number, pw: number, top: number, h: number, readTop: number, alpha: number) {
+        const f = fit(pts, pw - 24, h);
+        const S = f.S, cy = top + h / 2;
+        const xy = (p: P) => { const [x, y] = view(p); return [cx + (x + f.ox) * S, cy + (y + f.oy) * S] as const; };
+        const grow = ease(ramp(t, GROW, GROW + 1.0));
+        const c = pts[d.centre], [px, py] = xy(c);
+        pts.forEach((p, id) => {
+          if (id === d.centre) return;
+          const [x, y] = xy(p);
+          const nb = isNb.has(id) && grow > 0;
+          ctx.fillStyle = nb ? accent : faint;
+          ctx.globalAlpha = alpha * (nb ? 0.4 + 0.6 * grow : 0.55);
+          ctx.beginPath(); ctx.arc(x, y, (nb ? 2.6 : 2.2) * dot, 0, Math.PI * 2); ctx.fill();
+        });
+        ctx.globalAlpha = alpha;
+        // Ball of radius r (its outline in this view)
+        if (grow > 0) {
+          ctx.strokeStyle = accent;
+          ctx.lineWidth = 1.2;
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath(); ctx.arc(px, py, d.rBall * S * grow, 0, Math.PI * 2); ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        ctx.fillStyle = red;
+        ctx.beginPath(); ctx.arc(px, py, 3.4 * dot, 0, Math.PI * 2); ctx.fill();
+
+        // Zoomed inset of the ball: the point, then its neighbours, then the same neighbours turned edge-on
+        // (screen x = largest principal axis, y = normal): they lie on one flat surface
+        const edge = ease(ramp(t, EDGE, EDGE + 1.0));
+        const ir = Math.min((H - readTop - (narrow ? 34 : 24)) / 2, pw / 2 - 16);
+        const iy = readTop + ir;
+        const k = ir / d.rBall;
+        ctx.strokeStyle = faint;
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = alpha * 0.6;
+        ctx.beginPath(); ctx.arc(cx, iy, ir, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(px, py + 4); ctx.lineTo(cx, iy - ir); ctx.stroke();
+        const [e1, , nrm] = d.axes;
+        const along = (o: number[], e: number[]) => o[0] * e[0] + o[1] * e[1] + o[2] * e[2];
+        // Surface trace and normal, once edge-on
+        if (edge > 0) {
+          ctx.globalAlpha = alpha * edge;
+          ctx.strokeStyle = accent;
+          ctx.lineWidth = 1.2;
+          ctx.setLineDash([4, 3]);
+          ctx.beginPath(); ctx.moveTo(cx - ir * 0.9, iy); ctx.lineTo(cx + ir * 0.9, iy); ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.strokeStyle = red;
+          ctx.fillStyle = red;
+          ctx.lineWidth = 1.6;
+          const L = ir * 0.6;
+          ctx.beginPath(); ctx.moveTo(cx, iy); ctx.lineTo(cx, iy - L); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(cx, iy - L - 2); ctx.lineTo(cx - 4, iy - L + 5); ctx.lineTo(cx + 4, iy - L + 5); ctx.closePath(); ctx.fill();
+          ctx.font = `600 ${narrow ? 10 : 12}px "IBM Plex Mono", monospace`;
+          ctx.textAlign = 'left';
+          ctx.fillText('n', cx + 6, iy - L + 6);
+        }
+        const [vx, vy] = view(c);
+        d.neighbours.forEach((id) => {
+          const q = pts[id], [x, y] = view(q);
+          const off = [q[0] - c[0], q[1] - c[1], q[2] - c[2]];
+          const ox = (x - vx) + (along(off, e1) - (x - vx)) * edge, oy = (y - vy) + (-along(off, nrm) - (y - vy)) * edge;
+          const qx = cx + ox * k * grow, qy = iy + oy * k * grow;
+          ctx.strokeStyle = accent;
+          ctx.lineWidth = 1;
+          ctx.globalAlpha = alpha * 0.35 * grow * (1 - edge);
+          ctx.beginPath(); ctx.moveTo(cx, iy); ctx.lineTo(qx, qy); ctx.stroke();
+          ctx.globalAlpha = alpha * grow;
+          ctx.fillStyle = accent;
+          ctx.beginPath(); ctx.arc(qx, qy, 3 * dot, 0, Math.PI * 2); ctx.fill();
+        });
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = red;
+        ctx.beginPath(); ctx.arc(cx, iy, 4 * dot, 0, Math.PI * 2); ctx.fill();
+        ctx.font = `500 ${narrow ? 9.5 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = edge > 0 ? accent : text;
+        const [x, y, z] = c.map((v) => v.toFixed(2));
+        const label = edge > 0 ? 'seen edge-on: one flat surface' : grow > 0 ? `${K} neighbours, zoomed` : `p = (${x}, ${y}, ${z})`;
+        ctx.fillText(label, cx, iy + ir + (narrow ? 13 : 17), pw - 8);
+      }
+
+      // ——— Panel 3: rigid motion ———
+      function drawRigid(t: number, cx: number, pw: number, top: number, h: number, readTop: number, alpha: number) {
+        const f = fit([...allPoses, ...axesPts], pw - 24, h);
+        const S = f.S, cy = top + h / 2;
+        const xy = (p: P) => { const [x, y] = view(p); return [cx + (x + f.ox) * S, cy + (y + f.oy) * S] as const; };
+        // Interpolated pose
+        const m1 = ease(ramp(t, MOVES[0], MOVES[0] + 1.2)), m2 = ease(ramp(t, MOVES[1], MOVES[1] + 1.2));
+        const [a, b, c] = POSES;
+        const lerp = (k: 'th' | 'tx' | 'ty') => a[k] + (b[k] - a[k]) * m1 + (c[k] - b[k]) * m2;
+        const pose = { th: lerp('th'), tx: lerp('tx'), ty: lerp('ty') };
+        const moved = (p: P) => place(p, pose.th, pose.tx, pose.ty);
+
+        // Fixed world axes (1 m), the frame the coordinates are measured in
+        ctx.strokeStyle = faint;
+        ctx.fillStyle = faint;
+        ctx.lineWidth = 1.2;
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+        ctx.textAlign = 'center';
+        const o = xy([0, 0, 0]);
+        (['x', 'y', 'z'] as const).forEach((name, k) => {
+          const e = xy(axesPts[k + 1]);
+          ctx.beginPath(); ctx.moveTo(o[0], o[1]); ctx.lineTo(e[0], e[1]); ctx.stroke();
+          const ang = Math.atan2(e[1] - o[1], e[0] - o[0]);
+          ctx.fillText(name, e[0] + 9 * Math.cos(ang), e[1] + 9 * Math.sin(ang) + 4);
+        });
+
+        // Ghost of the original pose
+        if (m1 > 0) {
+          ctx.fillStyle = faint;
+          ctx.globalAlpha = alpha * 0.3 * m1;
+          pts.forEach((p) => {
+            const [x, y] = xy(place(p, a.th, a.tx, a.ty));
+            ctx.beginPath(); ctx.arc(x, y, 1.8 * dot, 0, Math.PI * 2); ctx.fill();
+          });
+        }
+        pts.forEach((p, id) => {
+          if (id === d.tracked) return;
+          const [x, y] = xy(moved(p));
+          ctx.fillStyle = heading;
+          ctx.globalAlpha = alpha * 0.75;
+          ctx.beginPath(); ctx.arc(x, y, 2.2 * dot, 0, Math.PI * 2); ctx.fill();
+        });
+        ctx.globalAlpha = alpha;
+        const q = moved(pts[d.tracked]), [qx, qy] = xy(q);
+        ctx.fillStyle = red;
+        ctx.beginPath(); ctx.arc(qx, qy, 3.6 * dot, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = red;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.arc(qx, qy, 7 * dot, 0, Math.PI * 2); ctx.stroke();
+
+        // Readout: the tracked point's coordinates and the required class
+        const lh = narrow ? 17 : 22;
+        ctx.textAlign = 'center';
+        ctx.font = `500 ${narrow ? 9.5 : 12}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = t >= MOVES[0] ? accent : text;
+        ctx.fillText(`p = (${q.map((v) => v.toFixed(2)).join(', ')})`, cx, readTop + 10, pw - 8);
+        ctx.font = `500 ${narrow ? 9.5 : 12}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = text;
+        const deg = Math.round((pose.th * 180) / Math.PI);
+        ctx.fillText(`rotated ${deg}°, moved (${(pose.tx - a.tx).toFixed(1)}, ${(pose.ty - a.ty).toFixed(1)}) m`, cx, readTop + 10 + lh, pw - 8);
+        outputPill(cx, readTop + 10 + 2.2 * lh, 'class: car', t >= MOVES[0] ? 'same class' : null);
+      }
+
+      // The required network output, with a note once the input has changed
+      function outputPill(cx: number, y: number, label: string, note: string | null) {
+        ctx.font = `600 ${narrow ? 10 : 12}px Sora, sans-serif`;
+        const w = ctx.measureText(label).width + 16, ph = narrow ? 18 : 22;
+        const left = note && !narrow ? cx - w / 2 - 34 : cx - w / 2;
+        ctx.fillStyle = dark ? '#2a3445' : '#e8ecf3';
+        ctx.beginPath(); ctx.roundRect(left, y - ph / 2, w, ph, ph / 2); ctx.fill();
+        ctx.fillStyle = heading;
+        ctx.textAlign = 'center';
+        ctx.fillText(label, left + w / 2, y + 4);
+        if (note && !narrow) {
+          ctx.font = `500 11px "IBM Plex Sans", sans-serif`;
+          ctx.fillStyle = accent;
+          ctx.textAlign = 'left';
+          ctx.fillText(`✓ ${note}`, left + w + 6, y + 4);
+        }
+      }
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(0, true); });
+    if (still) { frame(0, true); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

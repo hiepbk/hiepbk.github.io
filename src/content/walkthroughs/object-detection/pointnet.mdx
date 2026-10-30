@@ -1,0 +1,269 @@
+---
+title: "PointNet & PointNet++: learning directly on point sets"
+category: object-detection
+order: 1
+summary: "How do you feed an unordered set of 3D points to a neural network? PointNet's answer — a shared MLP and a max pool — became the building block inside almost every LiDAR detector that followed."
+date: 2026-10-30
+draft: true
+paper:
+  title: "PointNet: Deep Learning on Point Sets for 3D Classification and Segmentation · PointNet++: Deep Hierarchical Feature Learning on Point Sets in a Metric Space"
+  authors: "Charles R. Qi, Hao Su, Kaichun Mo, Leonidas J. Guibas · Charles R. Qi, Li Yi, Hao Su, Leonidas J. Guibas"
+  venue: CVPR 2017 · NeurIPS 2017
+  links:
+    - name: PointNet arXiv
+      url: https://arxiv.org/abs/1612.00593
+    - name: PointNet++ arXiv
+      url: https://arxiv.org/abs/1706.02413
+    - name: PointNet code
+      url: https://github.com/charlesq34/pointnet
+    - name: PointNet++ code
+      url: https://github.com/charlesq34/pointnet2
+---
+
+import Figure from '../../../components/walkthroughs/Figure.astro';
+import PointSetFigure from '../../../components/walkthroughs/PointSetFigure.astro';
+import VoxelGridFigure from '../../../components/walkthroughs/VoxelGridFigure.astro';
+import MultiViewFigure from '../../../components/walkthroughs/MultiViewFigure.astro';
+import PointSetPropertiesFigure from '../../../components/walkthroughs/PointSetPropertiesFigure.astro';
+import SymmetricFunctionFigure from '../../../components/walkthroughs/SymmetricFunctionFigure.astro';
+import SegHeadFigure from '../../../components/walkthroughs/SegHeadFigure.astro';
+import CriticalPointsFigure from '../../../components/walkthroughs/CriticalPointsFigure.astro';
+import SetAbstractionFigure from '../../../components/walkthroughs/SetAbstractionFigure.astro';
+import PointNetArchitectureFigure from '../../../components/walkthroughs/PointNetArchitectureFigure.astro';
+
+## Motivation & Main Contribution
+
+- This series is about 3D object detection, so why open with a *classification* paper?
+- Because the trick PointNet introduced shows up again and again: inside every voxel of **VoxelNet**,
+  every pillar of **PointPillars**, and as the backbone of **PointRCNN** and **PV-RCNN**.
+- **Main contribution:** the first network that consumes **raw points directly** — no voxel grid, no images —
+  for classification and per-point segmentation.
+- **PointNet++** adds what PointNet lacks: local neighbourhoods and a hierarchy, like a CNN.
+- Reading tip: if you understand "shared MLP + max pool", you understand half of the detectors that follow.
+
+## Challenges at the Time
+
+- A LiDAR scan is a **point set**: $N$ points, each $(x, y, z)$, maybe with intensity. No grid, no order.
+
+<Figure>
+  <PointSetFigure />
+  <span slot="caption">A point cloud is stored as an $N \times 3$ matrix, one row per point. Shuffling the rows gives a different matrix for the same car; dropping points gives a smaller matrix and a coarser car — but still a car.</span>
+</Figure>
+
+- CNNs need a regular grid, so in 2017 people forced points into one — and paid for it:
+  - **Voxel grid + 3D CNN** (VoxNet, 3D ShapeNets). A grid with $R$ cells per side has $R^3$ cells, so memory
+    and compute grow **cubically**: doubling the resolution costs $8\times$. A 3D kernel also has $k^3$
+    weights instead of $k^2$. Worse, almost all cells of a LiDAR grid are **empty**, yet the dense 3D
+    convolution still visits every one of them. So grids stay coarse (e.g. $32^3$), and coarse cells blur
+    away fine shape.
+
+<Figure>
+  <VoxelGridFigure />
+  <span slot="caption">The same car voxelized for a 3D CNN. At $8^3$ it is a few blocks; refining to $16^3$ and $32^3$ recovers the shape, but the number of cells grows as $R^3$ — $8\times$ per doubling. Almost all cells stay empty (red: occupied), yet a dense $3 \times 3 \times 3$ convolution still visits every one of them.</span>
+</Figure>
+
+- **Multi-view images + 2D CNN** (MVCNN). Render the object from many viewpoints and classify the images.
+    Strong for classifying single objects, but the 3D geometry is lost in projection, and it does not
+    extend naturally to whole scenes or to a label per point.
+
+<Figure>
+  <MultiViewFigure />
+  <span slot="caption">MVCNN renders the object from several viewpoints into 2D images and classifies them with a shared 2D CNN, pooling (max) over the views — enough to say *car*. But each pixel keeps only the nearest point along its ray: in these four $24 \times 16$ depth views, 1,485 of the car's 1,767 points never appear, and a single pixel stands for 146 points, so there is no direct way to read a label back for each 3D point.</span>
+</Figure>
+- Feeding points directly is not trivial either — a point-set network must respect three properties:
+  1. **Unordered.** $N$ points can be listed in $N!$ orders; the output must not change (*permutation invariance*).
+  2. **Interaction among points.** Neighbouring points form local structure that matters.
+  3. **Invariance to rigid transformations.** Rotating or translating the whole cloud should not change its class.
+
+<Figure>
+  <PointSetPropertiesFigure />
+  <span slot="caption">The three properties on the real car. (1) The same $N$ points can be listed in $N!$ orders — here $128! \approx 3.9 \cdot 10^{215}$ — and every listing must give the same output. (2) One point is just $(x, y, z)$; its neighbours within radius $r$ lie on a common surface — local structure. (3) Rotating or moving the car changes every coordinate, but not its class.</span>
+</Figure>
+
+## Naive Questions
+
+- **Why not flatten the $N \times 3$ array and feed it to an MLP?**
+  The weights would be tied to positions in the list: shuffle the points and the output changes.
+- **Then sort the points first?**
+  There is no ordering of 3D points that stays stable under small perturbations. The paper tried it — it works poorly.
+- **Treat the points as a sequence and use an RNN?**
+  Also tried in the paper. The RNN still depends on the order it is fed; it does worse than max pooling.
+- **Why not stay with voxels?**
+  Cubic cost, mostly empty cells, and quantisation error (see above).
+- **How can one 1024-dimensional vector describe a whole shape?**
+  The paper proves that this form can approximate any continuous set function, given enough channels.
+- **What happens if some points are missing?**
+  Usually nothing: only a small set of *critical points* decides the result (see below).
+
+## Key Idea
+
+> **Key idea.** Process every point with the *same* small network, then combine them with a *symmetric*
+> function — max pooling — so the order of the points cannot matter.
+
+$$
+f(\{x_1, \dots, x_n\}) \approx \gamma\Big(\operatorname{MAX}_{i=1..n}\, h(x_i)\Big)
+$$
+
+- $h$: a shared MLP applied to each point independently (in code: a $1 \times 1$ convolution).
+- $\operatorname{MAX}$: element-wise max over the points — any order gives the same vector.
+- $\gamma$: an MLP on the pooled vector.
+### Why max pooling, and not sum or average?
+
+- The paper tries average pooling and an attention-weighted sum as well; max pooling wins
+  "by a large winning margin" (Fig. 5 of the paper).
+
+<Figure>
+  <SymmetricFunctionFigure />
+  <span slot="caption">Each point goes through the same small MLP $h$, and an element-wise max over the points keeps, per channel, the largest value (outlined in the colour of the point it comes from). Shuffling the points only moves rows, so the max vector is unchanged. Flattening the $N \times 3$ array for an ordinary MLP ties each weight to a position in the list, so the same shuffle changes the output.</span>
+</Figure>
+
+## Dive into Model Architecture & Key Components
+
+### PointNet, layer by layer
+
+Tensor shapes for one object with $n$ points (classification network, Fig. 2 of the paper):
+
+<Figure>
+  <PointNetArchitectureFigure />
+  <span slot="caption">The whole PointNet (after Fig. 2 of the paper), run on the car stage by stage; each step lights one block and is tagged with its row of the table below. Classification: $n \times 3$ points → input transform (T-Net, $3 \times 3$) → shared MLP (64, 64) → feature transform (T-Net, $64 \times 64$) → shared MLP (64, 128, 1024) → max pool → $1 \times 1024$ global feature → MLP (512, 256, $k$) → $k$ class scores. Segmentation: each point's 64-d local feature plus the global feature ($n \times 1088$) → shared MLPs (512, 256, 128) and (128, $m$) → $n \times m$ scores. Feature values and part labels are illustrative; $n \times C$ blocks show 16 of the $n$ rows and a few of the $C$ columns.</span>
+</Figure>
+
+| Stage | Operation | Shape |
+|---|---|---|
+| Input | raw coordinates | $n \times 3$ |
+| Input transform | T-Net predicts a $3 \times 3$ matrix, multiply | $n \times 3$ |
+| Shared MLP (64, 64) | same MLP on every point | $n \times 64$ |
+| Feature transform | T-Net predicts a $64 \times 64$ matrix, multiply | $n \times 64$ |
+| Shared MLP (64, 128, 1024) | same MLP on every point | $n \times 1024$ |
+| Max pool | over the $n$ points | $1 \times 1024$ (global feature) |
+| MLP (512, 256, $k$) | classifier, dropout (keep ratio 0.7) | $k$ class scores |
+
+### T-Net: learning to align the input
+
+> **Builds on.** Spatial Transformer Networks (Jaderberg et al., 2015), which learn a transform that aligns
+> 2D images before the CNN — PointNet applies the same idea to points and to features.
+
+- A mini-PointNet (shared MLP 64-128-1024, max pool, FC 512-256) that regresses a transform matrix,
+  initialised to the identity.
+- Input T-Net: $3 \times 3$, a learned "canonical pose" for the cloud.
+- Feature T-Net: $64 \times 64$; harder to optimise, so a regulariser keeps it near orthogonal:
+
+$$
+L_{reg} = \lVert I - AA^\top \rVert_F^2 \quad (\text{weight } 0.001)
+$$
+
+- In hindsight: PointNet++ and later detectors drop the T-Nets; the max-pool idea is what lasted.
+
+### Segmentation head: local + global
+
+- Per-point labels need both what a point *is* and what the whole shape *is*.
+- Where the 1024 comes from: the shared MLP (64, 128, 1024) lifts every point to 1024 features
+  ($n \times 1024$); max pooling keeps the largest value of each column → the $1 \times 1024$ global feature.
+  1024 is simply the width the authors chose for that last layer.
+- Concatenate each point's 64-d local feature with the 1024-d global feature → $n \times 1088$,
+  then shared MLPs (512, 256, 128) and (128, $m$) → $n \times m$ per-point scores.
+
+<Figure>
+  <SegHeadFigure />
+  <span slot="caption">The segmentation head gives each point both kinds of information. A shared MLP lifts every point's 64-d local feature to 1024 features, and the max of each column over all points is the 1024-d global feature; it is copied to every point and concatenated with the local feature ($n \times 1088$). Shared MLPs then turn each row into $m$ scores ($n \times m$), one label per point. The part labels here (roof, windows, body) are illustrative.</span>
+</Figure>
+
+### Why max pooling is robust: critical points
+
+- Each of the 1024 channels takes its value from a single point → only a small **critical point set**
+  decides the global feature.
+- Any cloud between the critical set and the **upper-bound shape** gives exactly the same feature
+  → robust to missing points and outliers.
+
+<Figure>
+  <CriticalPointsFigure />
+  <span slot="caption">Max pooling over a shared MLP $h$ (here random and untrained, 64 channels) on a real car scan: each channel of $\max_i h(x_i)$ is won by a single point, so only 36 of the 1767 points form the critical set. Deleting all the other points leaves the global feature exactly the same, while deleting a critical point changes it. Fig. 7 of the paper shows the same idea for the trained network, together with the upper-bound shape.</span>
+</Figure>
+
+### PointNet++: adding locality and hierarchy
+
+- PointNet's weakness: each point is processed alone until one global max pool — no neighbourhoods,
+  no fine local structure. CNNs work because they build features from small patterns to large ones.
+> **Builds on.** PointNet itself, used as the local feature learner, and the CNN idea of building features
+> hierarchically from small receptive fields to large ones.
+
+- PointNet++ applies PointNet on **local regions**, then on regions of regions. One **set abstraction** level:
+  1. **Sampling** — farthest point sampling (FPS) picks $N'$ well-spread centroids.
+  2. **Grouping** — ball query gathers the neighbours of each centroid within radius $r$ (at most $K$ points).
+  3. **PointNet** — a small PointNet encodes each group (coordinates relative to the centroid) into one feature.
+- Shapes: $N \times (d + C) \;\rightarrow\; N' \times K \times (d + C) \;\rightarrow\; N' \times (d + C')$.
+
+<Figure>
+  <SetAbstractionFigure />
+  <span slot="caption">Set abstraction on the car. Farthest point sampling picks $N' = 32$ well-spread centroids from $N = 512$ points; a ball of radius $r = 0.5$ m around each gathers at most $K = 32$ neighbours; a small PointNet turns every group into a single point with a richer feature, $512 \times 3 \rightarrow 32 \times 32 \times 3 \rightarrow 32 \times (3 + 128)$. The next level repeats this with fewer points (8) and a larger radius (1 m), so each feature sees more of the car.</span>
+</Figure>
+
+- **Non-uniform density** (LiDAR is dense near the sensor, sparse far away):
+  multi-scale grouping (**MSG**, several radii per centroid), multi-resolution grouping (**MRG**, cheaper),
+  and random input dropout during training.
+- **Feature propagation** for segmentation: inverse-distance-weighted interpolation from the $k = 3$ nearest
+  points ($p = 2$) plus skip links — the encoder–decoder later used as the backbone of PointRCNN.
+
+## Conclusion
+
+### Results
+
+Shape classification on ModelNet40 (PointNet, Table 1):
+
+| Method | Input | Avg. class accuracy <span class="better-up">↑</span> | Overall accuracy <span class="better-up">↑</span> |
+|---|---|---|---|
+| 3DShapeNets | volume | 77.3 | 84.7 |
+| VoxNet | volume | 83.0 | 85.9 |
+| Subvolume | volume | 86.0 | **89.2** |
+| MVCNN | 80 images | **90.1** | – |
+| **PointNet** | raw points | 86.2 | **89.2** |
+
+Cost of the classification networks (PointNet, Table 6):
+
+| Method | Parameters <span class="better-down">↓</span> | FLOPs / sample <span class="better-down">↓</span> |
+|---|---|---|
+| MVCNN | 60.0 M | 62,057 M |
+| Subvolume | 16.6 M | 3,633 M |
+| **PointNet** | **3.5 M** | **440 M** |
+
+Segmentation (PointNet, Tables 2 and 3):
+
+| Task | Method | mIoU <span class="better-up">↑</span> |
+|---|---|---|
+| ShapeNet part segmentation | Yi et al. | 81.4 |
+| | 3D CNN baseline | 79.4 |
+| | **PointNet** | **83.7** |
+| S3DIS semantic segmentation | baseline (hand-crafted features) | 20.12 |
+| | **PointNet** | **47.71** |
+
+PointNet++ on ModelNet40 (PointNet++, Table 2):
+
+| Method | Input | Accuracy <span class="better-up">↑</span> |
+|---|---|---|
+| PointNet | points | 89.2 |
+| **PointNet++** | points | 90.7 |
+| **PointNet++** | points + normals | **91.9** |
+
+### Pros and Cons
+
+- **Pros**
+  - Consumes raw points: no voxel quantisation, no rendering.
+  - Order-invariant by design (shared MLP + max pool), and robust to missing points (critical points).
+  - Small and fast: 3.5 M parameters vs 60 M for MVCNN.
+  - One architecture for classification and per-point segmentation.
+- **Cons**
+  - PointNet has no notion of neighbourhoods — each point is processed alone until the global max pool.
+  - PointNet++ fixes that, but farthest point sampling and ball query are slow on 100k-point LiDAR scans.
+  - Shown on single objects and indoor rooms, not on detecting objects in outdoor driving scenes.
+
+### Future Work
+
+- Scale point-based learning to full outdoor LiDAR scans, with fast neighbourhood search.
+- Use the PointNet encoder as a building block inside 3D object detectors.
+
+### Next
+
+- [**MV3D**](/walkthroughs/object-detection/mv3d/) — the other road taken at the same time: turn the LiDAR into
+  images (bird's-eye and front view) and reuse 2D CNNs.
+- [**VoxelNet**](/walkthroughs/object-detection/voxelnet/) then answers the scaling problem: a mini-PointNet
+  *inside each voxel*, followed by convolutions — PointNet's idea, made fast enough for a whole scan.

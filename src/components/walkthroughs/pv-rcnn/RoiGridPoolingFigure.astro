@@ -1,0 +1,261 @@
+---
+// "RoI-grid pooling" around the best-observed car of the scan, top view. Beat 1: a proposal (illustrative
+// offset from the ground truth) and the keypoints around it (FPS at roughly KITTI density: 2,048 keypoints over
+// the front view). Beat 2: 6 × 6 × 6 grid points inside the proposal (seen from above: 6 × 6 columns of 6).
+// Beat 3: one grid point gathers keypoints within r̃ = 0.8 and 1.6 m — also outside the box — then every grid
+// point does the same. Beat 4: 216 grid features → MLP → IoU-guided confidence + box residual.
+// Ball queries run here at build time in 3D (grid points at the middle height of the box).
+import { cropScene, loadScene, bevBox, fpsIndices } from '../../../lib/walkthroughFiguresB';
+
+const r2 = (v: number) => Math.round(v * 100) / 100;
+const gt = bevBox(loadScene().boxes[2]);
+const X0 = gt.x - 5.4, X1 = gt.x + 5.4, Y0 = gt.y - 3.6, Y1 = gt.y + 3.6;
+const pool = cropScene(X0, X1, Y0, Y1, 4000, { seed: 4 });
+const kpIdx = fpsIndices(pool, 56, 3);
+const kps = kpIdx.map((i) => [r2(pool[i][0]), r2(pool[i][1]), r2(pool[i][2]), pool[i][4] >= 0 ? 1 : 0]);
+const disp = pool.slice(0, 900).flatMap((p) => [Math.round(p[0] * 100), Math.round(p[1] * 100)]);
+// Proposal: the ground truth shifted and turned a little (illustrative RPN error)
+const prop = { x: r2(gt.x + 0.45), y: r2(gt.y - 0.25), l: r2(gt.l * 0.93), w: r2(gt.w * 1.06), h: r2(gt.h + 0.07), z: gt.z, hz: gt.hz };
+const G = 6, R = [0.8, 1.6];
+const c = Math.cos(prop.h), s = Math.sin(prop.h);
+// 6 × 6 BEV grid; each column holds 6 grid points in height, queried here at the middle height
+const grid: number[][] = [];
+for (let i = 0; i < G; i++) for (let j = 0; j < G; j++) {
+  const u = ((i + 0.5) / G - 0.5) * prop.l, v = ((j + 0.5) / G - 0.5) * prop.w;
+  const gx = prop.x + u * c - v * s, gy = prop.y + u * s + v * c;
+  const ds = kps.map((k) => Math.hypot(k[0] - gx, k[1] - gy, k[2] - prop.z));
+  grid.push([r2(gx), r2(gy), ds.filter((d) => d < R[0]).length, ds.filter((d) => d < R[1]).length]);
+}
+// The grid point we zoom on: a corner column near the front of the car
+const focus = (G - 1) * G;
+const fx = grid[focus][0], fy = grid[focus][1];
+const members = kps.map((k, i) => [i, Math.hypot(k[0] - fx, k[1] - fy, k[2] - prop.z)])
+  .filter(([, d]) => d < R[1]).map(([i, d]) => [i, d < R[0] ? 1 : 0]);
+const data = { range: [X0, X1, Y0, Y1], disp, kps, prop, gt, grid, focus, members, R, G };
+---
+<canvas class="wt-canvas roigrid-canvas" data-roigrid={JSON.stringify(data)}
+  role="img" aria-label="RoI-grid pooling: a 6 by 6 by 6 grid of points inside a proposal; each grid point gathers keypoint features within radii of 0.8 and 1.6 metres, reaching outside the box; the 216 grid features go through an MLP that predicts an IoU-guided confidence and a box residual"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  import { iconPalette, drawBlock } from '../../../lib/figureIcons';
+  type Box = { x: number; y: number; l: number; w: number; h: number };
+  type Data = { range: number[]; disp: number[]; kps: number[][]; prop: Box; gt: Box; grid: number[][];
+    focus: number; members: number[][]; R: number[]; G: number };
+
+  const HEADLINE = [
+    'A proposal from the voxel RPN, keypoints around it',
+    'Sample 6 × 6 × 6 grid points inside the proposal',
+    'Each grid point gathers keypoints within two radii',
+    '216 grid features → MLP → confidence and box residual',
+  ];
+  const HEADLINE_SHORT = [
+    'A proposal and its keypoints',
+    '6 × 6 × 6 grid points inside',
+    'Each grid point: keypoints in 2 radii',
+    'MLP → confidence + residual',
+  ];
+
+  document.querySelectorAll<HTMLCanvasElement>('.roigrid-canvas').forEach((canvas) => {
+    const d: Data = JSON.parse(canvas.dataset.roigrid!);
+    const ctx = canvas.getContext('2d')!;
+    const [X0, X1, Y0, Y1] = d.range;
+    const N = d.disp.length / 2, NG = d.grid.length;
+    const member = new Map(d.members.map(([i, inner]) => [i, inner]));
+
+    // Beats: proposal · grid · gather · refine
+    const T = { prop: 0, grid: 4.0, gather: 8.5, refine: 15.5, end: 22 };
+    const BEATS = [T.prop, T.grid, T.gather, T.refine];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    const gridAt = (g: number) => T.grid + 0.5 + (2.4 * g) / NG;
+    const sweepAt = (g: number) => T.gather + 3.6 + (2.2 * g) / NG; // all other grid points gather
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    const PANEL_BLOCKS: ({ kind: 'mlp'; label: string } | null)[] = [null, { kind: 'mlp', label: 'MLP + max' }, { kind: 'mlp', label: '2-layer MLP' }];
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const teal = css.getPropertyValue('--accent-3').trim() || '#0ea5a0';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const orange = dark ? '#ffb86b' : '#d9730d';
+      const neutral = dark ? '#5d6879' : '#b4bcc8';
+      ctx.clearRect(0, 0, W, H);
+      const pal = iconPalette();
+
+      const beat = t < T.grid ? 0 : t < T.gather ? 1 : t < T.refine ? 2 : 3;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+
+      // Layout: zoomed top view on the left, tensor shapes on the right
+      const narrow = W < 520;
+      const panelW = narrow ? 110 : 190;
+      const px0 = W - panelW - (narrow ? 4 : 24);
+      const top = 80;
+      const S = Math.min((px0 - (narrow ? 6 : 20)) / (X1 - X0), (H - top - 6) / (Y1 - Y0));
+      const ox = (px0 - S * (X1 - X0)) / 2, oy = top + (H - top - S * (Y1 - Y0)) / 2;
+      const mx = (x: number) => ox + (x - X0) * S, my = (y: number) => oy + (Y1 - y) * S;
+      const viewCx = px0 / 2;
+
+      // Headline, titles and status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(narrow ? 'Top view' : 'One proposal, top view', viewCx, 42);
+      ctx.fillText(narrow ? 'Shapes' : 'Tensor shapes', px0 + panelW / 2, 42, panelW + 20);
+      const nIn = d.members.filter(([, inner]) => inner).length, nAll = d.members.length;
+      const lNote = narrow
+        ? ['keypoints: weighted', `${d.G}×${d.G} columns × ${d.G}`, `${nIn} + ${nAll - nIn} keypoints`, 'box → refined'][beat]
+        : ['keypoints carry weighted VSA features', `${d.G} × ${d.G} columns, ${d.G} grid points each`, `r̃ = ${d.R[0]} m: ${nIn} keypoint${nIn === 1 ? '' : 's'} · r̃ = ${d.R[1]} m: ${nAll} keypoint${nAll === 1 ? '' : 's'}`, 'refined box (residual) + IoU-guided score'][beat];
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(lNote, viewCx, 60, px0 - 8);
+
+      const dot = (x: number, y: number, r: number, fill: string) => {
+        ctx.fillStyle = fill;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      };
+      const boxPath = (b: Box) => {
+        const c = Math.cos(b.h), s = Math.sin(b.h);
+        ctx.beginPath();
+        [[1, 1], [1, -1], [-1, -1], [-1, 1]].forEach(([p, q], k) => {
+          const x = b.x + (p * b.l / 2) * c - (q * b.w / 2) * s, y = b.y + (p * b.l / 2) * s + (q * b.w / 2) * c;
+          if (k === 0) ctx.moveTo(mx(x), my(y)); else ctx.lineTo(mx(x), my(y));
+        });
+        ctx.closePath();
+      };
+
+      ctx.save();
+      ctx.beginPath(); ctx.rect(0, top - 6, px0 + 4, H - top + 6); ctx.clip();
+      // Raw points (faint) and keypoints (foreground keypoints stronger: predicted keypoint weighting)
+      ctx.globalAlpha = fadeAll * 0.7;
+      for (let i = 0; i < N; i++) dot(mx(d.disp[2 * i] / 100), my(d.disp[2 * i + 1] / 100), 0.9, neutral);
+      const zoom = beat === 2 && t < sweepAt(0) ? ease(ramp(t, T.gather + 0.3, T.gather + 1.0)) : 0;
+      d.kps.forEach(([x, y, , fg], i) => {
+        const m = member.get(i);
+        const hit = zoom > 0 && m !== undefined;
+        ctx.globalAlpha = fadeAll * (hit ? 1 : (fg ? 0.95 : 0.4) * (1 - 0.5 * zoom));
+        dot(mx(x), my(y), hit ? 3.6 : narrow ? 2.4 : 3, hit ? (m ? red : orange) : fg ? orange : accent);
+      });
+
+      // Proposal (moves to the refined box in beat 4)
+      const ref = beat === 3 ? ease(ramp(t, T.refine + 2.0, T.refine + 3.4)) : 0;
+      const box: Box = {
+        x: d.prop.x + (d.gt.x - d.prop.x) * ref, y: d.prop.y + (d.gt.y - d.prop.y) * ref,
+        l: d.prop.l + (d.gt.l - d.prop.l) * ref, w: d.prop.w + (d.gt.w - d.prop.w) * ref, h: d.prop.h + (d.gt.h - d.prop.h) * ref,
+      };
+      ctx.globalAlpha = fadeAll * ease(ramp(t, 0.3, 0.9));
+      ctx.strokeStyle = teal; ctx.lineWidth = 2;
+      boxPath(box); ctx.stroke();
+
+      // Grid points: hollow until they have gathered; filled by how many keypoints they found (within r̃ = 1.6 m)
+      const [fx, fy] = d.grid[d.focus];
+      d.grid.forEach(([x, y, , nB], g) => {
+        if (t < gridAt(g)) return;
+        const gathered = g === d.focus ? t >= T.gather + 1.6 : t >= sweepAt(g);
+        const gx = mx(x + (box.x - d.prop.x)), gy = my(y + (box.y - d.prop.y));
+        ctx.globalAlpha = fadeAll * (zoom > 0 && g !== d.focus ? 0.4 : 1);
+        if (gathered && nB > 0) dot(gx, gy, narrow ? 2.6 : 3.4, `hsl(${dark ? 190 : 200} 80% ${dark ? 70 - 5 * Math.min(nB, 6) : 60 - 6 * Math.min(nB, 6)}%)`);
+        else {
+          ctx.strokeStyle = heading; ctx.lineWidth = 1.1;
+          ctx.beginPath(); ctx.arc(gx, gy, narrow ? 2.2 : 2.8, 0, Math.PI * 2); ctx.stroke();
+        }
+      });
+
+      // Beat 3: the two balls of one grid point, and lines to the keypoints they capture
+      if (beat === 2) {
+        const on = ease(ramp(t, T.gather + 0.3, T.gather + 1.0)) * (1 - ease(ramp(t, sweepAt(0) - 0.4, sweepAt(0))));
+        if (on > 0) {
+          ctx.globalAlpha = fadeAll * on;
+          d.R.forEach((r, k) => {
+            ctx.fillStyle = k === 0 ? 'rgba(220,38,38,0.08)' : 'rgba(217,115,13,0.06)';
+            ctx.strokeStyle = k === 0 ? red : orange; ctx.lineWidth = 1.4;
+            ctx.beginPath(); ctx.arc(mx(fx), my(fy), r * S, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          });
+          const lines = ease(ramp(t, T.gather + 1.0, T.gather + 1.6));
+          ctx.globalAlpha = fadeAll * on * lines;
+          ctx.lineWidth = 1;
+          d.members.forEach(([i, inner]) => {
+            ctx.strokeStyle = inner ? red : orange;
+            ctx.beginPath(); ctx.moveTo(mx(fx), my(fy)); ctx.lineTo(mx(d.kps[i][0]), my(d.kps[i][1])); ctx.stroke();
+          });
+          ctx.globalAlpha = fadeAll * on;
+          dot(mx(fx), my(fy), 4.2, red);
+        }
+      }
+      ctx.restore();
+
+      // Shape panel: four rows, the current one highlighted
+      const rows = [
+        { sym: 'proposal', val: '7 box params' },
+        { sym: 'grid points', val: `${d.G}×${d.G}×${d.G} = ${d.G ** 3}` },
+        { sym: 'grid features', val: `${d.G ** 3} × C` },
+        { sym: 'flatten → MLP', val: '256 → IoU, Δbox' },
+      ];
+      const rowY0 = top + 14, rowGap = (H - rowY0 - 22) / 3;
+      const pcx = px0 + panelW / 2;
+      ctx.textAlign = 'center';
+      rows.forEach((row, k) => {
+        const y = rowY0 + k * rowGap;
+        ctx.globalAlpha = fadeAll * (k <= beat ? 1 : 0.35);
+        ctx.font = `500 ${narrow ? 10 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = faint;
+        ctx.fillText(row.sym, pcx, y, panelW);
+        ctx.font = `600 ${narrow ? 10 : 14}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = k === beat ? (beat === 0 ? heading : accent) : k < beat ? text : faint;
+        ctx.fillText(row.val, pcx, y + (narrow ? 16 : 20), panelW);
+        if (k < 3) {
+          const y0 = y + (narrow ? 23 : 28), y1 = y + rowGap - (narrow ? 13 : 15);
+          if (y1 - y0 < 8) return;
+          const blk = PANEL_BLOCKS[k];
+          if (blk) {
+            // The learned layer that turns this row into the next one
+            const bh = Math.min(narrow ? 18 : 24, y1 - y0 - (narrow ? 0 : 12)), bw = bh * 1.5;
+            const act = beat === k + 1 ? ease(ramp(t, BEATS[k + 1] + 0.2, BEATS[k + 1] + 1.0)) : 0;
+            drawBlock(ctx, blk.kind, pcx - bw / 2, y0 + (narrow ? (y1 - y0 - bh) / 2 : 0), bw, bh, pal,
+              { label: narrow ? undefined : blk.label, shared: true, active: act, alpha: fadeAll * (k < beat ? 1 : 0.4), compact: narrow });
+            return;
+          }
+          ctx.globalAlpha = fadeAll * (k < beat ? 0.9 : 0.35);
+          ctx.strokeStyle = faint; ctx.fillStyle = faint; ctx.lineWidth = 1.2;
+          ctx.beginPath(); ctx.moveTo(pcx, y0); ctx.lineTo(pcx, y1 - 5); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(pcx, y1); ctx.lineTo(pcx - 4, y1 - 6); ctx.lineTo(pcx + 4, y1 - 6); ctx.closePath(); ctx.fill();
+        }
+      });
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.gather + 2.5); });
+    if (still) { frame(T.gather + 2.5); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

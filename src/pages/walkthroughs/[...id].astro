@@ -1,0 +1,70 @@
+---
+import { getCollection, render } from 'astro:content';
+import Base from '../../layouts/Base.astro';
+import { walkthroughCategories } from '../../config';
+import 'katex/dist/katex.min.css';
+
+export async function getStaticPaths() {
+  const notes = await getCollection('walkthroughs', (n) => import.meta.env.DEV || !n.data.draft);
+  return notes.map((note) => ({ params: { id: note.id }, props: { note } }));
+}
+
+const { note } = Astro.props;
+const n = note.data;
+const { Content, headings } = await render(note);
+const category = walkthroughCategories.find((c) => c.id === n.category)?.name;
+const words = (note.body ?? '').split(/\s+/).length;
+const minutes = Math.max(1, Math.round(words / 220));
+const fmt = (d: Date) => d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+// Table of contents with the same numbers as the headings (1., 1.1, …)
+let h2n = 0, h3n = 0;
+const toc = headings
+  .filter((h) => h.depth === 2 || h.depth === 3)
+  .map((h) => {
+    if (h.depth === 2) { h2n++; h3n = 0; return { ...h, num: `${h2n}.` }; }
+    h3n++;
+    return { ...h, num: `${h2n}.${h3n}` };
+  });
+---
+<Base title={n.title} description={n.summary}>
+  <div class="note-layout">
+    <article class="note">
+      <header class="note-header">
+        <a class="back" href="/walkthroughs/"><i class="fa-solid fa-arrow-left"></i> Paper Walkthroughs</a>
+        <div class="note-tags">
+          {category && <span class="tag">{category}</span>}
+          {n.order && <span class="venue">Part {n.order}</span>}
+          {n.draft && <span class="tag draft">Draft</span>}
+        </div>
+        <h1>{n.title}</h1>
+        <p class="lead">{n.summary}</p>
+        <p class="note-meta">
+          {fmt(n.date)}{n.updated && <> · updated {fmt(n.updated)}</>} · {minutes} min read
+        </p>
+        <aside class="paper-box">
+          <span class="paper-label">The paper</span>
+          <p class="paper-title">{n.paper.title}</p>
+          <p class="paper-authors">{n.paper.authors}</p>
+          <p class="paper-venue">{n.paper.venue}</p>
+          {n.paper.links.length > 0 && (
+            <div class="pills">
+              {n.paper.links.map((l) => <a class="pill" href={l.url} target="_blank" rel="noopener">{l.name}</a>)}
+            </div>
+          )}
+        </aside>
+      </header>
+      <div class="prose note-body">
+        <Content />
+      </div>
+    </article>
+
+    {toc.length > 2 && (
+      <nav class="note-toc" aria-label="On this page">
+        <p>On this page</p>
+        <ul>
+          {toc.map((h) => <li class={`d${h.depth}`}><a href={`#${h.slug}`}><span class="num">{h.num}</span>{h.text}</a></li>)}
+        </ul>
+      </nav>
+    )}
+  </div>
+</Base>

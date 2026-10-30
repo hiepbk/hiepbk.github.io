@@ -1,0 +1,33 @@
+---
+// Main architecture of Voxel R-CNN, laid out like the paper's Figure 2: voxels → 3D backbone → BEV 2D backbone → RPN,
+// then voxel RoI pooling from the 3D feature volumes and the detect head. One node per row of the walkthrough's
+// tensor-shape table (KITTI), same names and shapes; data flows from the raw points to the boxes, one row at a time.
+const spec = {
+  cols: 5, rows: 2, colsN: 4, rowsN: 2,
+  nodes: [
+    { stage: 'Input range', glyph: 'points', shape: 'raw points', opText: 'X [0, 70.4] m, Y [−40, 40] m, Z [−3, 1] m',
+      head: 'Input: the raw LiDAR scan', pos: [0, 0], posN: [0, 0] },
+    { stage: 'Voxel grid', op: 'voxelize', shape: '1408 × 1600 × 40', shapeN: '1408×1600×40', opText: 'voxel size (0.05, 0.05, 0.1) m',
+      head: 'Voxelize the scan', pos: [1, 0], posN: [1, 0] },
+    { stage: '3D backbone', block: 'backbone', shape: '16, 32, 48, 64 ch', opText: 'four sparse-conv stages',
+      head: '3D backbone: four stages of sparse convolutions', headN: 'Sparse 3D backbone', pos: [2, 0], posN: [2, 0] },
+    { stage: '2D backbone', block: 'backbone', shape: '64, 128 ch', opText: 'stack along Z into BEV; two blocks of 5 conv layers',
+      head: 'Stack along Z into BEV, then a 2D backbone', headN: 'BEV + 2D backbone', pos: [3, 0], posN: [3, 0] },
+    { stage: 'RPN', block: 'rpn', shape: 'top 100 proposals', shapeN: 'top 100', opText: 'two sibling 1 × 1 convs, NMS IoU 0.7',
+      head: 'RPN: anchor proposals from the BEV map', headN: 'RPN → proposals', pos: [4, 0], posN: [3, 1] },
+    { stage: 'Voxel RoI pooling', block: 'roi', shape: '216 pts · 32 ch', opText: 'grid per proposal; voxel query, distances 2 and 4',
+      head: 'Voxel RoI pooling: grid points query the 3D voxel features', headN: 'Voxel RoI pooling', pos: [3, 1], posN: [2, 1], from: [4, 2] },
+    { stage: 'Detect head', block: 'mlp', shape: 'box + IoU score', opText: 'shared 2-layer MLP, two branches',
+      head: 'Detect head: box residual and IoU-guided score', headN: 'Residual + IoU score', pos: [2, 1], posN: [1, 1] },
+  ],
+};
+---
+<canvas class="wt-canvas arch-voxelrcnn-canvas" data-arch={JSON.stringify(spec)}
+  role="img" aria-label="Voxel R-CNN architecture, one block per row of the tensor-shape table: voxel grid, sparse 3D backbone, BEV 2D backbone, RPN proposals, voxel RoI pooling from the 3D feature volumes and the detect head"></canvas>
+
+<script>
+  import { runArchFigure, type ArchSpec } from '../../../lib/archFigureB';
+  document.querySelectorAll<HTMLCanvasElement>('.arch-voxelrcnn-canvas').forEach((canvas) => {
+    runArchFigure(canvas, JSON.parse(canvas.dataset.arch!) as ArchSpec);
+  });
+</script>

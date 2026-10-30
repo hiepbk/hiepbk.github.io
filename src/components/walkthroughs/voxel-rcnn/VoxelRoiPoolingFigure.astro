@@ -1,0 +1,284 @@
+---
+// "Voxel RoI pooling with voxel query" around the best-observed car of the scan, top view. Beat 1: the proposal
+// split into 6 × 6 × 6 sub-voxels — most contain no point, so max pooling per sub-voxel would read nothing.
+// Beat 2: ball query — one grid point checks its distance to every non-empty voxel, O(N). Beat 3: voxel query —
+// quantise the grid point, then step to neighbours by index offsets within Manhattan distance 2, then 4, O(K).
+// Beat 4: the grouped voxels go through a shared MLP and a max pool: one feature per grid point.
+// Voxels are the 8×-downsampled stage (0.4 × 0.4 × 0.8 m on KITTI), projected to BEV; the query is shown in 2D
+// as in the paper's Figure 3. Counts are computed here from the real scan.
+import { loadScene, bevBox } from '../../../lib/walkthroughFiguresB';
+
+const r2 = (v: number) => Math.round(v * 100) / 100;
+const { pts, boxes } = loadScene();
+const gt = bevBox(boxes[2]);
+const VS = 0.4, VZ = 0.8, Z0 = -3;
+// Window aligned to the voxel grid around the car
+const I0 = Math.floor((gt.x - 4.8) / VS), J0 = Math.floor((gt.y - 3.2) / VS), NI = 24, NJ = 16;
+const all3d = new Set<string>();
+const bev = new Set<string>();
+for (const p of pts) {
+  const i = Math.floor(p[0] / VS), j = Math.floor(p[1] / VS), k = Math.floor((p[2] - Z0) / VZ);
+  all3d.add(`${i},${j},${k}`);
+  if (i >= I0 && i < I0 + NI && j >= J0 && j < J0 + NJ) bev.add(`${i - I0},${j - J0}`);
+}
+const cells = [...bev].map((k) => k.split(',').map(Number));
+// Proposal (illustrative offset) and its 6 × 6 × 6 sub-voxels: how many contain at least one point?
+const prop = { x: r2(gt.x + 0.3), y: r2(gt.y - 0.15), l: r2(gt.l * 0.95), w: r2(gt.w * 1.05), h: 0, z: gt.z, hz: gt.hz };
+const G = 6;
+const filled = new Set<string>();
+for (const p of pts) {
+  const u = (p[0] - prop.x) / prop.l + 0.5, v = (p[1] - prop.y) / prop.w + 0.5, q = (p[2] - (prop.z - prop.hz / 2)) / prop.hz;
+  if (u < 0 || u >= 1 || v < 0 || v >= 1 || q < 0 || q >= 1) continue;
+  filled.add(`${Math.floor(u * G)},${Math.floor(v * G)},${Math.floor(q * G)}`);
+}
+// BEV columns of the sub-voxel grid: how many of their 6 sub-voxels are empty
+const colEmpty: number[] = [];
+for (let a = 0; a < G; a++) for (let b = 0; b < G; b++) {
+  let e = 0;
+  for (let c = 0; c < G; c++) if (!filled.has(`${a},${b},${c}`)) e++;
+  colEmpty.push(e);
+}
+// The grid point we query: sub-voxel column (4, 1), in window voxel coordinates
+const gx = prop.x + ((4 + 0.5) / G - 0.5) * prop.l, gy = prop.y + ((1 + 0.5) / G - 0.5) * prop.w;
+const q = [r2(gx / VS - I0), r2(gy / VS - J0)];
+const data = { VS, NI, NJ, cells, nAll: all3d.size, prop: { ...prop, x: r2(prop.x / VS - I0), y: r2(prop.y / VS - J0), l: r2(prop.l / VS), w: r2(prop.w / VS) },
+  G, empty: G * G * G - filled.size, colEmpty, q };
+---
+<canvas class="wt-canvas vroi-canvas" data-vroi={JSON.stringify(data)}
+  role="img" aria-label="Voxel RoI pooling: a proposal split into 6 by 6 by 6 sub-voxels is mostly empty, so each grid point instead gathers neighbouring voxels; a ball query checks every non-empty voxel, while the voxel query steps to neighbours by index offsets within a Manhattan distance of 2 and 4; a shared MLP and max pool give one feature per grid point"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  import { iconPalette, drawBlock, drawArrow } from '../../../lib/figureIcons';
+  type Data = { VS: number; NI: number; NJ: number; cells: number[][]; nAll: number;
+    prop: { x: number; y: number; l: number; w: number }; G: number; empty: number; colEmpty: number[]; q: number[] };
+
+  const HEADLINE = [
+    'Split the proposal into 6 × 6 × 6 sub-voxels: most are empty',
+    'Ball query: check the distance to every non-empty voxel, O(N)',
+    'Voxel query: step to neighbours by index offsets, O(K)',
+    'Shared MLP + max pool: one feature per grid point',
+  ];
+  const HEADLINE_SHORT = [
+    '6 × 6 × 6 sub-voxels: most empty',
+    'Ball query: every voxel, O(N)',
+    'Voxel query: index offsets, O(K)',
+    'MLP + max pool per grid point',
+  ];
+  const fmt = (n: number) => n.toLocaleString('en-US');
+
+  document.querySelectorAll<HTMLCanvasElement>('.vroi-canvas').forEach((canvas) => {
+    const d: Data = JSON.parse(canvas.dataset.vroi!);
+    const ctx = canvas.getContext('2d')!;
+    const occ = new Set(d.cells.map(([i, j]) => `${i},${j}`));
+    const qi = Math.floor(d.q[0]), qj = Math.floor(d.q[1]);
+    // Diamond offsets in order of Manhattan distance (shown in 2D)
+    const diamond: number[][] = [];
+    for (let m = 0; m <= 4; m++) for (let a = -m; a <= m; a++) for (const b of m - Math.abs(a) === 0 ? [0] : [m - Math.abs(a), -(m - Math.abs(a))]) diamond.push([a, b, m]);
+    const n2 = diamond.filter((o) => o[2] <= 2).length, n4 = diamond.length;
+    const found = (m: number) => diamond.filter((o) => o[2] <= m && occ.has(`${qi + o[0]},${qj + o[1]}`)).length;
+    // Ball query (radius 4 voxels, as far as the second threshold) over the window's voxels, in scan order
+    const order = d.cells.slice().sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+    const inBall = (c: number[]) => Math.hypot(c[0] + 0.5 - d.q[0], c[1] + 0.5 - d.q[1]) <= 4;
+
+    // Beats: sub-voxels · ball query · voxel query · aggregation
+    const T = { sub: 0, ball: 5.0, vq: 10.5, agg: 17.0, end: 23.0 };
+    const BEATS = [T.sub, T.ball, T.vq, T.agg];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    const scanAt = (k: number) => T.ball + 0.6 + (3.6 * k) / order.length;
+    const stepAt = (k: number) => T.vq + 0.6 + (k < n2 ? k * 0.12 : n2 * 0.12 + 1.4 + (k - n2) * 0.07);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const teal = css.getPropertyValue('--accent-3').trim() || '#0ea5a0';
+      const border = css.getPropertyValue('--border').trim() || '#e1e5ec';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const orange = dark ? '#ffb86b' : '#d9730d';
+      const pal = iconPalette();
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.ball ? 0 : t < T.vq ? 1 : t < T.agg ? 2 : 3;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+
+      // Layout: voxel grid on the left, counters and the aggregation blocks on the right
+      const narrow = W < 520;
+      const panelW = narrow ? 118 : 220;
+      const px0 = W - panelW - (narrow ? 2 : 16);
+      const top = 80;
+      const c = Math.min((px0 - (narrow ? 4 : 16)) / d.NI, (H - top - 6) / d.NJ); // pixels per voxel
+      const ox = (px0 - c * d.NI) / 2, oy = top + (H - top - c * d.NJ) / 2;
+      const gxp = (i: number) => ox + i * c, gyp = (j: number) => oy + (d.NJ - j) * c;
+      const viewCx = px0 / 2, pcx = px0 + panelW / 2;
+
+      // Headline, titles and status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(narrow ? 'Sparse voxels' : 'Sparse voxels (8×), top view', viewCx, 42);
+      ctx.fillText(narrow ? 'Cost' : 'Cost per grid point', pcx, 42, panelW);
+      const scanned = beat === 1 ? order.filter((_, k) => t >= scanAt(k)).length : 0;
+      const stepped = beat === 2 ? diamond.filter((_, k) => t >= stepAt(k)).length : 0;
+      const lNote = narrow
+        ? [`${d.empty} of 216 empty`, `${scanned} checked here`, `D ≤ ${stepped > n2 ? 4 : 2}`, 'neighbours → η'][beat]
+        : [`${d.empty} of ${d.G ** 3} sub-voxels contain no point`, 'every non-empty voxel of the scan is a candidate', `Manhattan distance D ≤ ${stepped > n2 ? 4 : 2} on voxel indices`, 'grouped voxels → η, then all 216 grid points'][beat];
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(lNote, viewCx, 60, px0 - 4);
+
+      // Voxel grid and the non-empty voxels
+      ctx.globalAlpha = fadeAll * 0.7;
+      ctx.strokeStyle = border; ctx.lineWidth = 0.6;
+      ctx.beginPath();
+      for (let i = 0; i <= d.NI; i++) { ctx.moveTo(gxp(i), gyp(0)); ctx.lineTo(gxp(i), gyp(d.NJ)); }
+      for (let j = 0; j <= d.NJ; j++) { ctx.moveTo(gxp(0), gyp(j)); ctx.lineTo(gxp(d.NI), gyp(j)); }
+      ctx.stroke();
+      const vox = dark ? '#6f7a8e' : '#94a3b8';
+      d.cells.forEach(([i, j]) => {
+        ctx.globalAlpha = fadeAll * 0.85;
+        ctx.fillStyle = vox;
+        ctx.fillRect(gxp(i) + 1, gyp(j + 1) + 1, c - 2, c - 2);
+      });
+
+      // Proposal and its 6 × 6 sub-voxel columns (shaded by how many of their 6 sub-voxels are empty)
+      const P = d.prop, cw = P.l / d.G, ch = P.w / d.G;
+      const bx = (u: number) => gxp(P.x - P.l / 2 + u * cw), by = (v: number) => gyp(P.y - P.w / 2 + v * ch);
+      if (beat === 0) {
+        const on = ease(ramp(t, 0.8, 1.6));
+        for (let a = 0; a < d.G; a++) for (let b = 0; b < d.G; b++) {
+          const e = d.colEmpty[a * d.G + b];
+          ctx.globalAlpha = fadeAll * on * (0.1 + 0.5 * (e / d.G));
+          ctx.fillStyle = red;
+          ctx.fillRect(bx(a) + 1, by(b + 1) + 1, cw * c - 2, ch * c - 2);
+        }
+      }
+      ctx.globalAlpha = fadeAll * ease(ramp(t, 0.3, 0.9));
+      ctx.strokeStyle = teal; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let a = 1; a < d.G; a++) { ctx.moveTo(bx(a), by(0)); ctx.lineTo(bx(a), by(d.G)); ctx.moveTo(bx(0), by(a)); ctx.lineTo(bx(d.G), by(a)); }
+      ctx.stroke();
+      ctx.lineWidth = 2;
+      ctx.strokeRect(bx(0), by(d.G), P.l * c, P.w * c);
+      // Grid points (sub-voxel centres)
+      for (let a = 0; a < d.G; a++) for (let b = 0; b < d.G; b++) {
+        ctx.fillStyle = heading;
+        ctx.globalAlpha = fadeAll * (beat === 3 ? 1 : 0.6);
+        ctx.beginPath(); ctx.arc(bx(a + 0.5), by(b + 0.5), beat === 3 ? 2.4 : 1.6, 0, Math.PI * 2); ctx.fill();
+      }
+
+      // The query grid point
+      const qx = gxp(d.q[0]), qy = gyp(d.q[1]);
+      if (beat === 1) {
+        // Ball query: a sweep checks every voxel; those within the radius light up
+        order.forEach((cl, k) => {
+          if (t < scanAt(k)) return;
+          const fresh = 1 - ramp(t, scanAt(k), scanAt(k) + 0.4);
+          ctx.globalAlpha = fadeAll * (inBall(cl) ? 1 : 0.25 + 0.6 * fresh);
+          ctx.fillStyle = inBall(cl) ? orange : faint;
+          ctx.fillRect(gxp(cl[0]) + 1, gyp(cl[1] + 1) + 1, c - 2, c - 2);
+        });
+        const cur = order[Math.min(order.length - 1, Math.max(0, scanned - 1))];
+        if (scanned > 0 && scanned < order.length) {
+          ctx.globalAlpha = fadeAll * 0.8;
+          ctx.strokeStyle = orange; ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(qx, qy); ctx.lineTo(gxp(cur[0] + 0.5), gyp(cur[1] + 0.5)); ctx.stroke();
+        }
+        ctx.globalAlpha = fadeAll * 0.8;
+        ctx.strokeStyle = orange; ctx.lineWidth = 1.4;
+        ctx.beginPath(); ctx.arc(qx, qy, 4 * c, 0, Math.PI * 2); ctx.stroke();
+      }
+      if (beat === 2) {
+        // Voxel query: the query's own cell, then cells by increasing Manhattan distance
+        diamond.forEach(([a, b, m], k) => {
+          if (t < stepAt(k)) return;
+          const hit = occ.has(`${qi + a},${qj + b}`);
+          ctx.globalAlpha = fadeAll * (hit ? 1 : 0.5);
+          ctx.strokeStyle = m <= 2 ? accent : orange; ctx.lineWidth = 1.4;
+          ctx.strokeRect(gxp(qi + a) + 1.5, gyp(qj + b + 1) + 1.5, c - 3, c - 3);
+          if (hit) { ctx.fillStyle = m <= 2 ? accent : orange; ctx.globalAlpha = fadeAll * 0.75; ctx.fillRect(gxp(qi + a) + 2, gyp(qj + b + 1) + 2, c - 4, c - 4); }
+        });
+      }
+      if (beat >= 1) {
+        ctx.globalAlpha = fadeAll;
+        ctx.fillStyle = red;
+        ctx.beginPath(); ctx.arc(qx, qy, 4, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = dark ? '#0b0f17' : '#ffffff'; ctx.lineWidth = 1.2; ctx.stroke();
+      }
+
+      // Right panel: counters, then the aggregation blocks
+      const rows = [
+        { k: 'ball query', v: beat >= 1 ? `${fmt(beat === 1 ? Math.round((d.nAll * scanned) / order.length) : d.nAll)} checks` : '?', on: beat >= 1, cur: beat === 1 },
+        { k: 'voxel query, D ≤ 2 / 4', v: beat >= 2 ? `${Math.min(stepped || n4, n2)} / ${beat === 2 ? Math.max(0, stepped - n2) || '…' : n4 - n2 + n2} lookups` : '?', on: beat >= 2, cur: beat === 2 },
+      ];
+      ctx.textAlign = 'center';
+      rows.forEach((r, k) => {
+        const y = top + 10 + k * (narrow ? 34 : 42);
+        ctx.globalAlpha = fadeAll * (r.on ? 1 : 0.35);
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = faint;
+        ctx.fillText(r.k, pcx, y, panelW);
+        ctx.font = `600 ${narrow ? 10 : 14}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = r.cur ? accent : r.on ? text : faint;
+        ctx.fillText(r.v, pcx, y + (narrow ? 15 : 19), panelW);
+      });
+      if (beat >= 2) {
+        ctx.globalAlpha = fadeAll;
+        ctx.font = `500 ${narrow ? 9 : 10}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = text;
+        ctx.fillText(`found: ${found(2)} (D ≤ 2), ${found(4)} (D ≤ 4)`, pcx, top + (narrow ? 82 : 102), panelW);
+      }
+      // Blocks: K grouped voxels → shared MLP → max pool → η
+      const by0 = top + (narrow ? 108 : 120), bh = narrow ? 30 : 40, bw = narrow ? 40 : 58;
+      const act = beat === 3 ? ease(ramp(t, T.agg + 0.4, T.agg + 1.4)) : 0;
+      const actMax = beat === 3 ? ease(ramp(t, T.agg + 1.6, T.agg + 2.6)) : 0;
+      const alpha = beat === 3 ? 1 : 0.35;
+      const x1 = pcx - bw - (narrow ? 6 : 12), x2 = pcx + (narrow ? 6 : 12);
+      drawBlock(ctx, 'mlp', x1, by0, bw, bh, pal, { label: narrow ? 'MLP Ψ' : 'shared MLP Ψ', sub: narrow ? undefined : '[v − g ; φ]', shared: true, active: act, alpha: alpha * fadeAll, compact: narrow });
+      drawBlock(ctx, 'maxpool', x2, by0, bw, bh, pal, { label: narrow ? 'max' : 'max pool', sub: narrow ? undefined : 'over K', active: actMax, alpha: alpha * fadeAll, compact: narrow });
+      drawArrow(ctx, x1 + bw + 2, by0 + bh / 2, x2 - 2, by0 + bh / 2, pal, undefined, alpha * fadeAll);
+      const yOut = by0 + bh + (narrow ? 30 : 44);
+      drawArrow(ctx, x2 + bw / 2, by0 + bh + (narrow ? 14 : 30), x2 + bw / 2, yOut, pal, undefined, alpha * fadeAll);
+      ctx.globalAlpha = fadeAll * (beat === 3 ? actMax : 0.35);
+      ctx.font = `600 ${narrow ? 10 : 12}px "IBM Plex Mono", monospace`;
+      ctx.fillStyle = beat === 3 ? accent : faint;
+      ctx.textAlign = 'center';
+      ctx.fillText(narrow ? 'η per grid point' : 'η_i: one feature per grid point', pcx, yOut + 14, panelW);
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.vq + 5); });
+    if (still) { frame(T.vq + 5); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

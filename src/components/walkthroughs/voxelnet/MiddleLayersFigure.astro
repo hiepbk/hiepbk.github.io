@@ -1,0 +1,248 @@
+---
+// VoxelNet's convolutional middle layers, on one real x–z slice (one 0.2 m voxel row) through a parked car:
+// 32 voxels along x (6.4 m) × D' = 10 along z (4 m). Beat 1: the sparse tensor (occupied voxels coloured). Beats 2–4:
+// the three Conv3D layers shrink the depth 10 → 5 → 3 → 2 (strides 2, 1, 2 along z; paddings 1, 0, 1); every
+// output cell is computed, although most see only zeros. Beat 5: reshape 64 × 2 → 128 channels, a BEV map for the RPN.
+// The runtime bars are the paper's breakdown (225 ms on a Titan X).
+import { loadScene } from '../../../lib/walkthroughFiguresA';
+
+const NX = 32, NZ = 10, X0 = 4.4, Z0 = -1.2; // 10 layers of 0.4 m from 1.2 m below the road (KITTI: z ∈ [−3, 1] m, sensor 1.73 m up)
+const { points } = loadScene();
+let best: number[] = [];
+for (let y0 = 5.4; y0 < 7.4; y0 += 0.2) {
+  const occ = new Array(NX * NZ).fill(0);
+  for (const p of points) {
+    if (p.y < y0 || p.y >= y0 + 0.2 || p.x < X0 || p.x >= X0 + NX * 0.2 || p.z < Z0 || p.z >= Z0 + NZ * 0.4) continue;
+    occ[Math.floor((p.z - Z0) / 0.4) * NX + Math.floor((p.x - X0) / 0.2)] = 1;
+  }
+  if (occ.reduce((s, v) => s + v, 0) > best.reduce((s, v) => s + v, 0)) best = occ;
+}
+const data = { nx: NX, nz: NZ, occ: best.join('') };
+---
+<canvas class="wt-canvas middle-layers-canvas" data-mid={JSON.stringify(data)}
+  role="img" aria-label="A side slice of the voxel grid through a car: three 3D convolutions shrink the height from 10 to 5, 3 and 2 cells while computing every cell, most of them on zeros; the remaining height is reshaped into channels, giving a bird's-eye-view map for the region proposal network"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  import { drawBlock, iconPalette } from '../../../lib/figureIcons';
+  type Mid = { nx: number; nz: number; occ: string };
+
+  const HEADLINE = [
+    'The voxel features as a sparse 4D tensor (one x–z slice shown)',
+    'Conv3D, stride 2 along z: depth 10 → 5, every cell computed',
+    'Conv3D, no padding along z: depth 5 → 3',
+    'Conv3D, stride 2 along z: depth 3 → 2',
+    'Reshape: the 2 depth cells × 64 channels become 128 channels in BEV',
+  ];
+  const HEADLINE_SHORT = ['Sparse 4D tensor (x–z slice)', 'Conv3D stride 2: depth 10 → 5', 'Conv3D: depth 5 → 3', 'Conv3D stride 2: depth 3 → 2', 'Reshape: 2 × 64 → 128 channels'];
+  // Layers: [input depth, stride, padding] along z; kernel 3
+  const LAYERS = [[10, 2, 1], [5, 1, 0], [3, 2, 1]];
+  const SHAPES = ['128 × 10 × 400 × 352', '64 × 5 × 400 × 352', '64 × 3 × 400 × 352', '64 × 2 × 400 × 352', '128 × 400 × 352'];
+  const TIMES = [['voxel input', 5], ['feature net', 20], ['middle layers', 170], ['RPN', 30]] as const;
+
+  document.querySelectorAll<HTMLCanvasElement>('.middle-layers-canvas').forEach((canvas) => {
+    const d: Mid = JSON.parse(canvas.dataset.mid!);
+    const ctx = canvas.getContext('2d')!;
+    const NX = d.nx;
+    // Grids: occupancy-reach of each layer ("does any occupied input voxel reach this cell?")
+    const grids: number[][] = [Array.from(d.occ, Number)];
+    const depths = [d.nz];
+    for (const [din, s, p] of LAYERS) {
+      const dout = Math.floor((din + 2 * p - 3) / s) + 1;
+      const prev = grids[grids.length - 1], g = new Array(dout * NX).fill(0);
+      for (let z = 0; z < dout; z++) for (let x = 0; x < NX; x++) {
+        for (let kz = 0; kz < 3; kz++) for (let kx = -1; kx <= 1; kx++) {
+          const iz = z * s - p + kz, ix = x + kx;
+          if (iz >= 0 && iz < din && ix >= 0 && ix < NX && prev[iz * NX + ix]) g[z * NX + x] = 1;
+        }
+      }
+      grids.push(g); depths.push(dout);
+    }
+    const occCount = grids.map((g) => g.reduce((s, v) => s + v, 0));
+
+    // Beats: tensor · conv 1 · conv 2 · conv 3 · reshape
+    const T = { input: 0, c1: 5, c2: 11.5, c3: 16, reshape: 20.5, end: 27 };
+    const BEATS = [T.input, T.c1, T.c2, T.c3, T.reshape];
+    const SWEEP = [4.6, 3.4, 3.4]; // seconds for each kernel sweep
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const cellBg = dark ? '#1f2737' : '#eef1f6';
+      const zeroCol = dark ? '#2a3445' : '#dfe4ec';
+      const hit = dark ? '#ff6b6b' : '#e5484d';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.c1 ? 0 : t < T.c2 ? 1 : t < T.c3 ? 2 : t < T.reshape ? 3 : 4;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const narrow = W < 520;
+
+      // Layout: the four grids stacked on the left, runtime bars on the right
+      const panelW = narrow ? 104 : 190;
+      const gx = narrow ? 58 : 118, gW = W - panelW - gx - (narrow ? 12 : 40);
+      const cw = gW / NX;
+      const top = narrow ? 86 : 94, gap = narrow ? 14 : 18;
+      const ch = Math.min(narrow ? 7 : 10, (H - top - 3 * gap - 22) / 20);
+      const gy = [top];
+      for (let k = 1; k < 4; k++) gy.push(gy[k - 1] + depths[k - 1] * ch + gap);
+      const px = W - panelW;
+
+      // Headline, titles, status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(narrow ? 'Side slice x–z' : 'Side slice (x along, z up)', gx + gW / 2, 46, gW);
+      ctx.fillText(narrow ? 'Runtime' : 'Runtime (225 ms)', px + panelW / 2, 46, panelW);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      const k = Math.min(beat, 3);
+      const cells = depths[k] * NX;
+      const note = beat === 0 ? (narrow ? `${occCount[0]} / ${cells} occupied` : `${SHAPES[0]} · ${occCount[0]} of ${cells} cells occupied here`)
+        : beat < 4 ? (narrow ? `${cells} computed, ${cells - occCount[k]} on zeros` : `${SHAPES[k]} · all ${cells} cells computed, ${cells - occCount[k]} see only zeros`)
+          : (narrow ? SHAPES[4] : `${SHAPES[4]} → the RPN, as for an image`);
+      ctx.fillText(note, gx + gW / 2, 64, gW + 20);
+      ctx.fillStyle = beat >= 1 ? accent : text;
+      ctx.fillText(beat >= 1 && beat < 4 ? (narrow ? '170 of 225 ms' : '170 of 225 ms in these layers') : beat === 4 ? (narrow ? 'RPN: 30 ms' : 'then the RPN: 30 ms') : (narrow ? 'Titan X' : 'per frame, Titan X'), px + panelW / 2, 64, panelW);
+
+      // Grids
+      const shown = [1, beat >= 1 ? 1 : 0, beat >= 2 ? 1 : 0, beat >= 3 ? 1 : 0];
+      const progress: number[] = [1, ...LAYERS.map((_, l) => (beat > l + 1 ? 1 : beat === l + 1 ? ease(ramp(t, BEATS[l + 1] + 0.6, BEATS[l + 1] + 0.6 + SWEEP[l])) : 0))];
+      const reshape = beat === 4 ? ease(ramp(t, T.reshape + 0.6, T.reshape + 2.4)) : 0;
+      for (let g = 0; g < 4; g++) {
+        if (!shown[g]) continue;
+        const D = depths[g], y0 = gy[g];
+        const n = Math.round(progress[g] * D * NX); // cells computed so far (row by row from the top of the output)
+        // Label: depth
+        ctx.globalAlpha = fadeAll * (beat === 4 && g < 3 ? 0.35 : 1);
+        ctx.fillStyle = faint;
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`D=${D}`, gx - 5, y0 + (D * ch) / 2);
+        ctx.textBaseline = 'alphabetic';
+        for (let z = 0; z < D; z++) for (let x = 0; x < NX; x++) {
+          const idx = (D - 1 - z) * NX + x; // draw z upwards
+          const order = (D - 1 - z) * NX + x;
+          const done = g === 0 || order < n;
+          const yy = y0 + z * ch, xx = gx + x * cw, hh = ch;
+          ctx.globalAlpha = fadeAll * (beat === 4 && g < 3 ? 0.35 : 1);
+          ctx.fillStyle = !done ? cellBg : grids[g][idx] ? hit : zeroCol;
+          ctx.fillRect(xx + 0.5, yy + 0.5, cw - 1, hh - 1);
+        }
+        // Beat 5: each column of the last grid (2 depth cells × 64 channels) becomes one BEV cell with 128 channels
+        if (g === 3 && reshape > 0) {
+          ctx.globalAlpha = fadeAll * reshape;
+          ctx.strokeStyle = accent;
+          ctx.lineWidth = 1.5;
+          for (let x = 0; x < NX; x++) ctx.strokeRect(gx + x * cw + 0.5, y0 + 0.5, cw - 1, D * ch - 1);
+        }
+        // Kernel at the current output cell, and its 3 × 3 receptive field in the input grid
+        if (g > 0 && beat === g && progress[g] > 0 && progress[g] < 1) {
+          const [, s, p] = LAYERS[g - 1];
+          const o = Math.min(D * NX - 1, n);
+          const oz = Math.floor(o / NX), ox = o % NX; // oz counted from the top row of the output
+          const Din = depths[g - 1];
+          // output row oz from the top = depth index D-1-oz; input rows used: (D-1-oz)*s - p + {0,1,2}
+          const zi = (D - 1 - oz) * s - p;
+          const rowTop = Din - 1 - (zi + 2), rowBot = Din - 1 - zi; // rows from the top in the input drawing
+          ctx.globalAlpha = fadeAll;
+          ctx.strokeStyle = dark ? '#ffffff' : '#111827';
+          ctx.lineWidth = 1.5;
+          const r0 = Math.max(-0.5, rowTop), r1 = Math.min(Din - 0.5 + 0.5, rowBot + 1);
+          ctx.strokeRect(gx + (ox - 1) * cw, gy[g - 1] + r0 * ch, 3 * cw, (r1 - r0) * ch);
+          ctx.strokeStyle = accent;
+          ctx.strokeRect(gx + ox * cw, gy[g] + oz * ch, cw, ch);
+        }
+      }
+      // A Conv3D block in front of each output grid (the layer that produced it)
+      const pal = iconPalette();
+      for (let g = 1; g < 4; g++) {
+        if (!shown[g]) continue;
+        const bwc = narrow ? 24 : 40, bhc = narrow ? 22 : 30;
+        const yc = gy[g] + (depths[g] * ch) / 2 - bhc / 2;
+        drawBlock(ctx, 'conv3d', narrow ? 2 : 8, yc, bwc, bhc, pal, { active: beat === g ? 0.8 : 0, alpha: fadeAll * (beat === 4 ? 0.45 : 1) });
+        if (!narrow) {
+          ctx.globalAlpha = fadeAll * (beat === 4 ? 0.45 : 1);
+          ctx.fillStyle = faint;
+          ctx.font = `500 9px "IBM Plex Mono", monospace`;
+          ctx.textAlign = 'left';
+          ctx.fillText(`s=${LAYERS[g - 1][1]},p=${LAYERS[g - 1][2]}`, 52, yc + bhc / 2 + 3);
+        }
+      }
+      // Beat 5: the BEV map and the RPN
+      if (beat === 4) {
+        const a = fadeAll * ramp(t, T.reshape + 2.4, T.reshape + 2.9);
+        ctx.globalAlpha = a;
+        ctx.fillStyle = accent;
+        ctx.font = `600 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+        ctx.textAlign = 'left';
+        const yb = gy[3] + depths[3] * ch + (narrow ? 13 : 16);
+        ctx.fillText(narrow ? '↑ one BEV row: 128 ch.' : '↑ height folded into channels: one BEV row, 128 channels per cell', gx, yb, gW);
+      }
+
+      // Runtime bars (paper, Section 3.3)
+      const maxMs = 170, barX = px + (narrow ? 0 : 6), barW = panelW - (narrow ? 4 : 16);
+      TIMES.forEach(([name, ms], i) => {
+        const y = top + i * (narrow ? 40 : 46);
+        const active = (i === 2 && beat >= 1 && beat < 4) || (i === 3 && beat === 4);
+        ctx.globalAlpha = fadeAll;
+        ctx.fillStyle = active ? accent : text;
+        ctx.font = `${active ? 600 : 500} ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.fillText(name, barX, y + 8, barW);
+        ctx.textAlign = 'right';
+        ctx.fillText(`${ms} ms`, barX + barW, y + 8);
+        ctx.fillStyle = active ? (i === 2 ? red : accent) : zeroCol;
+        ctx.fillRect(barX, y + 14, Math.max(2, (ms / maxMs) * barW), narrow ? 8 : 10);
+      });
+
+      // Legend
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+      ctx.textAlign = 'left';
+      const lx = barX, ly = top + 4 * (narrow ? 40 : 46) + 14;
+      ctx.fillStyle = hit; ctx.fillRect(lx, ly - 8, 8, 8);
+      ctx.fillStyle = text; ctx.fillText(narrow ? 'data' : 'reached by data', lx + 12, ly);
+      ctx.fillStyle = zeroCol; ctx.fillRect(lx, ly + 8, 8, 8);
+      ctx.fillStyle = text; ctx.fillText(narrow ? 'zeros only' : 'computed on zeros only', lx + 12, ly + 16);
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.reshape - 0.5); });
+    if (still) { frame(T.reshape - 0.5); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

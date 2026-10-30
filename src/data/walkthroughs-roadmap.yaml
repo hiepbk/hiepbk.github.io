@@ -1,0 +1,65 @@
+# Reading roadmap shown on /walkthroughs/. Once a walkthrough is written, give it the same `order` and
+# `category` in its frontmatter and the roadmap entry links to it automatically. `id` must be unique.
+
+- id: od-01-pointnet
+  category: object-detection
+  order: 1
+  paper: PointNet & PointNet++
+  venue: CVPR 2017 · NeurIPS 2017
+  hook: "How do you feed an unordered set of points to a neural network? The building block behind every point-based detector."
+
+- id: od-02-mv3d
+  category: object-detection
+  order: 2
+  paper: MV3D
+  venue: CVPR 2017
+  hook: "Before learning on raw points — project the LiDAR to a bird's-eye view, treat it like an image, and fuse it with the camera."
+
+- id: od-03-voxelnet
+  category: object-detection
+  order: 3
+  paper: VoxelNet
+  venue: CVPR 2018
+  hook: "End-to-end detection from raw LiDAR: split space into voxels, learn a feature per voxel, then convolve. The origin of voxel-based detectors."
+
+- id: od-04-second
+  category: object-detection
+  order: 4
+  paper: SECOND
+  venue: Sensors 2018
+  hook: "Most voxels are empty — so skip them. Sparse 3D convolution makes VoxelNet fast, plus the ground-truth sampling trick everyone still uses."
+
+- id: od-05-pointpillars
+  category: object-detection
+  order: 5
+  paper: PointPillars
+  venue: CVPR 2019
+  hook: "Drop the height axis entirely. Vertical pillars + a 2D CNN give real-time 3D detection."
+
+- id: od-06-pointrcnn
+  category: object-detection
+  order: 6
+  paper: PointRCNN
+  venue: CVPR 2019
+  hook: "The point-based answer: segment foreground points first, propose boxes from them, then refine — a two-stage detector without voxels."
+
+- id: od-07-pvrcnn
+  category: object-detection
+  order: 7
+  paper: PV-RCNN
+  venue: CVPR 2020
+  hook: "Why choose? Voxels for efficient proposals, points for precise refinement — the point–voxel fusion that topped the benchmarks."
+
+- id: od-08-centerpoint
+  category: object-detection
+  order: 8
+  paper: CenterPoint
+  venue: CVPR 2021
+  hook: "Objects as points in BEV: predict a heatmap of centers instead of anchor boxes — simpler, rotation-friendly and great for tracking."
+
+- id: od-09-voxelrcnn
+  category: object-detection
+  order: 9
+  paper: Voxel R-CNN
+  venue: AAAI 2021
+  hook: "Do we really need raw points for refinement? Voxel RoI pooling keeps PV-RCNN's accuracy at a fraction of the cost."

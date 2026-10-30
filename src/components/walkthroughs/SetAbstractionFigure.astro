@@ -1,0 +1,316 @@
+---
+// "PointNet++ set abstraction" on the real car. Beat 1: farthest point sampling picks N' centroids one by
+// one. Beat 2: a ball of radius r around each centroid gathers at most K neighbours (three balls, then all).
+// Beat 3: a small PointNet turns each group into one point with a richer feature. Beat 4: the same steps
+// again on the smaller set, with fewer centroids and a larger radius. Ball queries run here at build time.
+import { loadCar, farthestPointSample } from '../../lib/walkthroughData';
+import type { P } from '../../lib/walkthroughData';
+
+const N = 512;
+// FPS order: the first N' points of the set are exactly the centroids FPS picks on it
+const points = farthestPointSample(loadCar(), N);
+const dist = (a: P, b: P) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+// Ball query: the first K points (in index order) within radius r of each of the first nC points
+const ballQuery = (pts: P[], nC: number, r: number, K: number) =>
+  pts.slice(0, nC).map((c) => pts.map((p, i) => (dist(p, c) < r ? i : -1)).filter((i) => i >= 0).slice(0, K));
+const levels = [
+  { n: N, nC: 32, r: 0.5, K: 32, C: 0, C2: 128 },
+  { n: 32, nC: 8, r: 1.0, K: 8, C: 128, C2: 256 },
+].map((l) => ({ ...l, groups: ballQuery(points.slice(0, l.n), l.nC, l.r, l.K) }));
+const data = { points, levels };
+---
+<canvas class="wt-canvas setabs-canvas" data-setabs={JSON.stringify(data)}
+  role="img" aria-label="PointNet++ set abstraction on a car: farthest point sampling picks centroids, ball queries group their neighbours, a small PointNet turns each group into one point, and the next level repeats with fewer points and a larger radius"></canvas>
+
+<style is:global>
+  .wt-figure .wt-canvas.setabs-canvas { height: 370px; }
+  @media (max-width: 600px) { .wt-figure .wt-canvas.setabs-canvas { height: 320px; } }
+</style>
+
+<script>
+  import { FIGURE_SPEED } from '../../lib/figureClock';
+  import { iconPalette, drawBlock } from '../../lib/figureIcons';
+  type P = [number, number, number];
+  type Level = { n: number; nC: number; r: number; K: number; C: number; C2: number; groups: number[][] };
+  type Data = { points: P[]; levels: Level[] };
+
+  const HEADLINE = [
+    'Sampling: farthest point sampling picks well-spread centroids',
+    'Grouping: a ball of radius r gathers each centroid’s neighbours',
+    'PointNet: each group becomes one point with a richer feature',
+    'Next level: fewer points, larger radius — a growing receptive field',
+  ];
+  const ARROWS = ['sample + group', 'PointNet'];
+  const ARROWS_SHORT = ['group', 'PointNet'];
+
+  document.querySelectorAll<HTMLCanvasElement>('.setabs-canvas').forEach((canvas) => {
+    const { points: pts, levels }: Data = JSON.parse(canvas.dataset.setabs!);
+    const ctx = canvas.getContext('2d')!;
+    const L1 = levels[0];
+    // Centre the car along its length
+    const uMid = (Math.min(...pts.map((p) => p[0])) + Math.max(...pts.map((p) => p[0]))) / 2;
+
+    // Beats: sampling · grouping · PointNet · next level
+    const T = { sample: 0, group: 6.5, encode: 14.0, next: 18.5, end: 29.3 };
+    const BEATS = [T.sample, T.group, T.encode, T.next];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    const hue = (g: number) => 200 + (130 * g) / L1.nC; // identity colour of level-1 group g
+
+    // Per-level timing: when centroid k is picked, when the ball of group g appears, when groups collapse
+    const DEMO = 3; // balls shown one at a time before all of them
+    const timing = [
+      {
+        pickAt: (k: number) => T.sample + 0.8 + k * 0.1,
+        ballAt: (g: number) => (g < DEMO ? T.group + 0.4 + g * 1.2 : T.group + 4.0 + g * 0.03),
+        collapse: [T.encode + 0.3, T.encode + 1.5],
+      },
+      {
+        pickAt: (k: number) => T.next + 0.3 + k * 0.25,
+        ballAt: (g: number) => T.next + 3.0 + g * 0.12,
+        collapse: [T.next + 6.5, T.next + 7.7],
+      },
+    ];
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.group ? 0 : t < T.encode ? 1 : t < T.next ? 2 : 3;
+      const lv = beat < 3 ? 0 : 1;
+      const L = levels[lv], tm = timing[lv];
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const picked = L.groups.filter((_, k) => t >= tm.pickAt(k)).length;
+      const collapse = ease(ramp(t, tm.collapse[0], tm.collapse[1]));
+      // Stage of the shape panel: 0 = input, 1 = grouped, 2 = abstracted
+      const stage = t >= tm.collapse[0] ? 2 : t >= tm.ballAt(0) ? 1 : 0;
+
+      // Layout: car on the left, tensor shapes on the right
+      const narrow = W < 520;
+      const panelW = narrow ? 118 : 190;
+      const px0 = W - panelW - (narrow ? 4 : 30);
+      const carCx = px0 / 2, top = 84;
+      const S = Math.min((px0 - (narrow ? 10 : 30)) / 5.6, (H - top - 6) / 3.3);
+      const carCy = (top + H) / 2 + 1.0 * S;
+
+      // Headline, titles and status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText(HEADLINE[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(narrow ? `SA level ${lv + 1}` : `Set abstraction level ${lv + 1}`, carCx, 46);
+      ctx.fillText('Tensor shapes', px0 + panelW / 2, 46, panelW + 20);
+      const leftNote = [
+        `${picked} of ${L.n} points picked`,
+        narrow ? `r = ${L.r} m, ≤ ${L.K} pts each` : `r = ${L.r} m, at most K = ${L.K} points each`,
+        narrow ? `${L.nC} points, richer features` : `${L.nC} points left, each with ${L.C2} features`,
+        stage === 0 ? `${picked} of ${L.n} points picked` : stage === 1 ? `r = ${L.r} m, ≤ ${L.K} points each` : `${L.nC} points, ${L.C2} features each`,
+      ][beat];
+      const rightNote = narrow
+        ? ['N → N′', 'K per centroid', 'one per group', 'repeat']
+        : ['N → N′ centroids', 'K neighbours per centroid', 'one feature per group', 'same steps, smaller set'];
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(leftNote, carCx, 64, px0 - 8);
+      ctx.fillText(rightNote[beat], px0 + panelW / 2, 64, panelW + 20);
+
+      // Car in a gentle 3D sway
+      const a = -0.45 + 0.12 * Math.sin(time * 0.5);
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const proj = (p: P) => {
+        const u = p[0] - uMid;
+        const x = u * ca - p[1] * sa, v = u * sa + p[1] * ca;
+        return [carCx + x * S, carCy - p[2] * S + v * S * 0.35] as const;
+      };
+      const dot = (x: number, y: number, r: number, fill: string) => {
+        ctx.fillStyle = fill;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      };
+      const ring = (x: number, y: number, r: number, stroke: string, w = 1.4) => {
+        ctx.strokeStyle = stroke; ctx.lineWidth = w;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+      };
+
+      // Input of the current level: raw points (level 1) or the level-1 output (level 2)
+      const inR = lv === 0 ? 1.5 : 4.2, outR = lv === 0 ? 4.2 : 7.5;
+      const neutral = dark ? '#8b97ab' : '#94a3b8';
+      const inColor = (i: number) => (lv === 0 ? neutral : `hsl(${hue(i)} 75% 55%)`);
+      const groupColor = (g: number, l = 55) => (lv === 0 ? `hsl(${hue(g)} 75% ${l}%)` : accent);
+      const outColor = (g: number) => (lv === 0 ? `hsl(${hue(g)} 75% 55%)` : accent);
+      const P2 = pts.slice(0, L.n).map(proj);
+      const ballOn = (g: number) => ease(ramp(t, tm.ballAt(g), tm.ballAt(g) + 0.4));
+      // Colour of a point: the first visible group it was gathered into
+      const firstGroup = new Array<number>(L.n).fill(-1);
+      L.groups.forEach((m, g) => { if (ballOn(g) > 0.5) m.forEach((i) => { if (firstGroup[i] < 0) firstGroup[i] = g; }); });
+      const fadeIn = lv === 0 ? ease(ramp(t, 0, 0.5)) : 1;
+
+      // Everything of the car stays below the status lines
+      ctx.save();
+      ctx.beginPath(); ctx.rect(0, top - 10, px0 + 16, H - top + 10); ctx.clip();
+      // Once points have been abstracted away, a faint ghost of the raw car keeps the shape readable
+      const ghost = lv === 1 ? 1 : collapse;
+      if (ghost > 0) {
+        ctx.globalAlpha = fadeAll * 0.22 * ghost;
+        for (const p of pts) { const [x, y] = proj(p); dot(x, y, 1.1, neutral); }
+      }
+
+      // Balls: translucent disc + outline; the demo balls (level 1) also show their member count
+      for (let g = 0; g < L.nC; g++) {
+        const on = ballOn(g) * (1 - collapse);
+        if (on <= 0) continue;
+        const [cx, cy] = P2[g], rr = L.r * S * on;
+        const demo = lv === 0 && g < DEMO;
+        const strong = lv === 1 || demo;
+        if (strong) {
+          ctx.globalAlpha = fadeAll * on * (lv === 0 ? 0.08 : 0.04);
+          dot(cx, cy, rr, groupColor(g));
+        }
+        ctx.globalAlpha = fadeAll * on * (strong ? 0.85 : 0.3);
+        ring(cx, cy, rr, groupColor(g, 50), strong ? 1.4 : 1);
+        // Offsets to the centroid: the group is encoded in coordinates relative to it
+        if (!strong) continue;
+        ctx.globalAlpha = fadeAll * on * 0.7;
+        ctx.strokeStyle = groupColor(g); ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        for (const i of L.groups[g]) { ctx.moveTo(cx, cy); ctx.lineTo(P2[i][0], P2[i][1]); }
+        ctx.stroke();
+        if (demo) {
+          ctx.globalAlpha = fadeAll * on;
+          ctx.fillStyle = groupColor(g, 45);
+          ctx.font = `600 ${narrow ? 10 : 11}px "IBM Plex Mono", monospace`;
+          ctx.textAlign = 'center';
+          ctx.fillText(`${L.groups[g].length} pts`, cx, cy - rr - 4);
+        }
+      }
+
+      // Points: before the collapse every input point; during it, each group's members fly into the centroid
+      if (collapse <= 0) {
+        for (let i = 0; i < L.n; i++) {
+          if (i < picked) continue; // centroids drawn on top
+          ctx.globalAlpha = fadeAll * fadeIn;
+          dot(P2[i][0], P2[i][1], inR, firstGroup[i] >= 0 ? groupColor(firstGroup[i]) : inColor(i));
+        }
+      } else {
+        const used = new Set(L.groups.flat());
+        for (let i = 0; i < L.n; i++) {
+          if (used.has(i) || i < L.nC) continue;
+          ctx.globalAlpha = fadeAll * (1 - collapse);
+          dot(P2[i][0], P2[i][1], inR, inColor(i));
+        }
+        L.groups.forEach((m, g) => {
+          const [cx, cy] = P2[g];
+          ctx.globalAlpha = fadeAll * (1 - collapse * collapse);
+          for (const i of m) {
+            if (i === g) continue;
+            dot(P2[i][0] + (cx - P2[i][0]) * collapse, P2[i][1] + (cy - P2[i][1]) * collapse, inR, groupColor(g));
+          }
+        });
+      }
+
+      // Centroids: picked in red (newest with a pulse); after the collapse they carry the group feature
+      for (let k = 0; k < picked; k++) {
+        const [x, y] = P2[k];
+        ctx.globalAlpha = fadeAll;
+        if (collapse > 0) {
+          const r = inR + (outR - inR) * collapse;
+          dot(x, y, r, outColor(k));
+          ring(x, y, r, dark ? '#ffffff' : '#1f2937', 1.2 * collapse);
+          continue;
+        }
+        if (lv === 1) dot(x, y, inR, inColor(k));
+        const pulse = 1 - ramp(t, tm.pickAt(k), tm.pickAt(k) + 0.6);
+        if (lv === 0) dot(x, y, 3, red);
+        ring(x, y, (lv === 0 ? 4 : 7) + 6 * pulse, red, 1.8);
+      }
+      ctx.restore();
+
+      // Shape panel: three rows (input → grouped → abstracted), the current one highlighted
+      const dC = (C: number) => (C ? `(3 + ${C})` : '3');
+      const rows = [
+        { sym: 'N × (d + C)', val: `${L.n} × ${dC(L.C)}` },
+        { sym: 'N′ × K × (d + C)', val: `${L.nC} × ${L.K} × ${dC(L.C)}` },
+        { sym: 'N′ × (d + C′)', val: `${L.nC} × ${dC(L.C2)}` },
+      ];
+      const rowY0 = top + 22, rowGap = (H - rowY0 - 26) / 2;
+      const pcx = px0 + panelW / 2;
+      ctx.textAlign = 'center';
+      rows.forEach((row, k) => {
+        const y = rowY0 + k * rowGap;
+        ctx.globalAlpha = fadeAll * (k <= stage ? 1 : 0.35);
+        ctx.font = `500 ${narrow ? 10 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = faint;
+        ctx.fillText(row.sym, pcx, y, panelW);
+        ctx.font = `600 ${narrow ? 11 : 14}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = k === stage ? (beat === 0 ? heading : accent) : k < stage ? text : faint;
+        ctx.fillText(row.val, pcx, y + (narrow ? 17 : 21), panelW);
+        if (k === 1) {
+          // The PointNet on every group: shared MLP → max pool, lit while the groups collapse
+          const y0 = y + (narrow ? 26 : 32), y1 = y + rowGap - (narrow ? 15 : 17);
+          const pal = iconPalette();
+          const act = ramp(t, tm.collapse[0] - 0.3, tm.collapse[0]) * (1 - ramp(t, tm.collapse[1] + 0.6, tm.collapse[1] + 1.2));
+          const bh = narrow ? 20 : 26, mw = narrow ? 30 : 42, pw = narrow ? 26 : 34, gap = narrow ? 14 : 22;
+          const bx = pcx - (mw + gap + pw) / 2, by = (y0 + y1) / 2 - (bh + 12) / 2 + (narrow ? 5 : 6);
+          ctx.globalAlpha = fadeAll * (k < stage ? 1 : 0.45);
+          ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+          ctx.fillStyle = act > 0.05 ? accent : faint;
+          ctx.fillText(ARROWS[1], pcx, by - (narrow ? 9 : 11));
+          drawBlock(ctx, 'mlp', bx, by, mw, bh, pal, { label: narrow ? 'MLP' : 'shared MLP', shared: true, active: act, compact: true });
+          ctx.strokeStyle = faint; ctx.fillStyle = faint; ctx.lineWidth = 1.2;
+          const ax0 = bx + mw + 3, ax1 = bx + mw + gap - 3, ay = by + bh / 2;
+          ctx.beginPath(); ctx.moveTo(ax0, ay); ctx.lineTo(ax1 - 4, ay); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(ax1, ay); ctx.lineTo(ax1 - 5, ay - 3.5); ctx.lineTo(ax1 - 5, ay + 3.5); ctx.closePath(); ctx.fill();
+          drawBlock(ctx, 'maxpool', bx + mw + gap, by, pw, bh, pal, { label: narrow ? 'max' : 'max pool', active: act, compact: true });
+          ctx.textAlign = 'center';
+        }
+        if (k === 0) {
+          // Arrow + step name down to the next row
+          const y0 = y + (narrow ? 26 : 32), y1 = y + rowGap - (narrow ? 15 : 17);
+          ctx.globalAlpha = fadeAll * (k < stage ? 0.9 : 0.35);
+          ctx.strokeStyle = faint; ctx.fillStyle = faint; ctx.lineWidth = 1.2;
+          ctx.beginPath(); ctx.moveTo(pcx, y0); ctx.lineTo(pcx, y1 - 5); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(pcx, y1); ctx.lineTo(pcx - 4, y1 - 6); ctx.lineTo(pcx + 4, y1 - 6); ctx.closePath(); ctx.fill();
+          ctx.textAlign = 'left';
+          ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+          ctx.fillText(narrow ? ARROWS_SHORT[k] : ARROWS[k], pcx + 8, (y0 + y1) / 2 + 3, panelW / 2 - 8);
+          ctx.textAlign = 'center';
+        }
+      });
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.group + 5.5); });
+    if (still) { frame(T.group + 5.5); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

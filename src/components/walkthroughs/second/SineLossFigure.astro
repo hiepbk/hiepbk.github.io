@@ -1,0 +1,264 @@
+---
+// SECOND's sine-error angle loss and direction classifier. A predicted car box (1.6 × 3.9 m, the KITTI car anchor)
+// turns by Δθ from 0 to π around the ground-truth box. Beat 1: VoxelNet's direct loss SmoothL1(Δθ) keeps rising and
+// is largest at Δθ = π, although that box covers exactly the same ground. Beat 2: SECOND's SmoothL1(sin Δθ) returns
+// to zero at π and follows the overlap: 1 − BEV IoU is drawn dashed (computed here by polygon clipping).
+// Beat 3: the sine cannot tell the two headings apart; the softmax direction classifier (target: yaw > 0) does.
+// Smooth L1 with β = 1 (0.5 x² below 1, |x| − 0.5 above).
+const W_ = 1.6, L_ = 3.9;
+type Pt = [number, number];
+const rect = (a: number): Pt[] => [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([u, v]) => {
+  const x = (u * L_) / 2, y = (v * W_) / 2;
+  return [x * Math.cos(a) - y * Math.sin(a), x * Math.sin(a) + y * Math.cos(a)];
+});
+// Sutherland–Hodgman clipping of convex polygons
+const clip = (subject: Pt[], clipPoly: Pt[]) => {
+  let out = subject;
+  for (let i = 0; i < clipPoly.length; i++) {
+    const [a, b] = [clipPoly[i], clipPoly[(i + 1) % clipPoly.length]];
+    const inside = (p: Pt) => (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) >= 0;
+    const inter = (p: Pt, q: Pt): Pt => {
+      const a1 = b[1] - a[1], b1 = a[0] - b[0], c1 = a1 * a[0] + b1 * a[1];
+      const a2 = q[1] - p[1], b2 = p[0] - q[0], c2 = a2 * p[0] + b2 * p[1];
+      const det = a1 * b2 - a2 * b1;
+      return [(b2 * c1 - b1 * c2) / det, (a1 * c2 - a2 * c1) / det];
+    };
+    const inp = out;
+    out = [];
+    inp.forEach((p, k) => {
+      const q = inp[(k + 1) % inp.length];
+      if (inside(q)) { if (!inside(p)) out.push(inter(p, q)); out.push(q); }
+      else if (inside(p)) out.push(inter(p, q));
+    });
+    if (!out.length) break;
+  }
+  return out;
+};
+const area = (p: Pt[]) => Math.abs(p.reduce((s, [x, y], k) => s + x * p[(k + 1) % p.length][1] - p[(k + 1) % p.length][0] * y, 0)) / 2;
+const N = 90;
+const iou = Array.from({ length: N + 1 }, (_, k) => {
+  const inter = area(clip(rect((Math.PI * k) / N), rect(0)));
+  return Math.round((inter / (2 * W_ * L_ - inter)) * 1000) / 1000;
+});
+---
+<canvas class="wt-canvas sine-loss-canvas" data-iou={JSON.stringify(iou)}
+  role="img" aria-label="A predicted car box turns away from the ground-truth box from 0 to 180 degrees; the direct angle loss keeps growing and is largest when the box is flipped, although it then covers the same area, while the sine loss returns to zero and follows the overlap; a direction classifier then decides which way the car faces"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  import { drawBlock, iconPalette } from '../../../lib/figureIcons';
+
+  const BW = 1.6, BL = 3.9, YAW_GT = 0.3; // ground-truth yaw (rad), > 0 → direction target "positive"
+  const sl1 = (x: number) => (Math.abs(x) < 1 ? 0.5 * x * x : Math.abs(x) - 0.5);
+  const HEADLINE = [
+    'VoxelNet regresses Δθ directly: a box flipped by π gets the largest loss',
+    'SECOND: SmoothL1(sin Δθ) is zero again at π and follows the overlap',
+    'The sine hides the heading: a direction classifier brings it back',
+  ];
+  const HEADLINE_SHORT = ['Direct Δθ: flipped box, largest loss', 'Sine loss: zero again at π', 'Direction classifier: which way?'];
+
+  document.querySelectorAll<HTMLCanvasElement>('.sine-loss-canvas').forEach((canvas) => {
+    const iou: number[] = JSON.parse(canvas.dataset.iou!);
+    const ctx = canvas.getContext('2d')!;
+    const iouAt = (d: number) => { const k = (Math.abs(d) / Math.PI) * (iou.length - 1); const a = Math.floor(k), b = Math.min(iou.length - 1, a + 1); return iou[a] + (iou[b] - iou[a]) * (k - a); };
+
+    // Beats: direct · sine · direction classifier
+    const T = { direct: 0, sine: 7.5, dir: 15, end: 23 };
+    const BEATS = [T.direct, T.sine, T.dir];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const teal = dark ? '#3fd6cc' : '#0d9488';
+      const gtCol = dark ? '#e8ecf3' : '#121826';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.sine ? 0 : t < T.dir ? 1 : 2;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const narrow = W < 520;
+      // Δθ: sweeps 0 → π in beats 1 and 2 (then holds), stays at π in beat 3
+      const sweep = (b: number) => ease(ramp(t, BEATS[b] + 0.8, BEATS[b] + 5.6));
+      const dth = beat === 2 ? Math.PI : Math.PI * sweep(beat);
+      const loss = beat === 0 ? sl1(dth) : sl1(Math.sin(dth));
+
+      // Layout: boxes on the left, loss plot on the right
+      const boxW = narrow ? 120 : 230;
+      const top = narrow ? 84 : 94;
+      const bcx = (narrow ? 4 : 16) + boxW / 2, bcy = top + (H - top - 20) / 2;
+      const bs = Math.min(boxW / (BL + 0.8), (H - top - 30) / (BL + 0.8));
+      const px0 = boxW + (narrow ? 44 : 84), px1 = W - (narrow ? 8 : 20);
+      const py0 = top + 8, py1 = H - (narrow ? 34 : 40);
+      const yMax = 2.8;
+      const PX = (d: number) => px0 + ((px1 - px0) * d) / Math.PI;
+      const PY = (v: number) => py1 - ((py1 - py0) * v) / yMax;
+
+      // Headline, titles, status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(narrow ? 'Boxes (top)' : 'Ground truth vs prediction', bcx, 46, boxW + 10);
+      ctx.fillText(beat === 2 ? (narrow ? 'Direction head' : 'Direction classifier (softmax)') : (narrow ? 'Angle loss' : 'Angle loss vs Δθ'), (px0 + px1) / 2, 46, px1 - px0 + 30);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = dth > 0.01 ? accent : text;
+      const deg = Math.round((dth * 180) / Math.PI);
+      ctx.fillText(narrow ? `Δθ = ${deg}° · IoU ${iouAt(dth).toFixed(2)}` : `Δθ = ${deg}° · BEV IoU = ${iouAt(dth).toFixed(2)}`, bcx, 64, boxW + 30);
+      const rNote = beat === 2 ? (narrow ? 'target: GT yaw > 0' : 'target: is the ground-truth yaw > 0?') : `loss = ${loss.toFixed(2)}`;
+      ctx.fillStyle = beat === 0 && dth > 0.01 ? red : dth > 0.01 ? accent : text;
+      ctx.fillText(rNote, (px0 + px1) / 2, 64, px1 - px0 + 30);
+
+      // Boxes: ground truth (dashed) and the prediction (solid), each with a heading arrow
+      const drawBox = (yaw: number, col: string, dashed: boolean, lw: number) => {
+        const c = Math.cos(yaw), s = Math.sin(yaw);
+        const P = (x: number, y: number) => [bcx + (x * c - y * s) * bs, bcy - (x * s + y * c) * bs] as const;
+        ctx.strokeStyle = col; ctx.lineWidth = lw;
+        if (dashed) ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(([u, v], k) => { const p = P((u * BL) / 2, (v * BW) / 2); k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); });
+        ctx.closePath(); ctx.stroke();
+        ctx.setLineDash([]);
+        // Heading arrow: from the centre to the front
+        const a = P(0, 0), b = P(BL / 2 - 0.3, 0);
+        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+        const ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
+        ctx.beginPath(); ctx.moveTo(b[0], b[1]);
+        ctx.lineTo(b[0] - 8 * Math.cos(ang - 0.45), b[1] - 8 * Math.sin(ang - 0.45));
+        ctx.lineTo(b[0] - 8 * Math.cos(ang + 0.45), b[1] - 8 * Math.sin(ang + 0.45));
+        ctx.closePath(); ctx.fillStyle = col; ctx.fill();
+      };
+      ctx.globalAlpha = fadeAll;
+      drawBox(YAW_GT, gtCol, true, 1.5);
+      // Beat 3: the classifier output flips the predicted box back by π
+      const flip = beat === 2 ? ease(ramp(t, T.dir + 4.2, T.dir + 5.6)) : 0;
+      drawBox(YAW_GT + dth - flip * Math.PI, beat === 0 ? red : teal, false, 2);
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = faint;
+      ctx.textAlign = 'center';
+      ctx.fillText(narrow ? 'dashed: GT' : 'dashed: ground truth · arrow: heading', bcx, H - 10, boxW + 30);
+
+      if (beat < 2) {
+        // Axes
+        ctx.strokeStyle = faint; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(px0, py0); ctx.lineTo(px0, py1); ctx.lineTo(px1, py1); ctx.stroke();
+        ctx.fillStyle = faint;
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+        ctx.textAlign = 'center';
+        [[0, '0'], [Math.PI / 2, 'π/2'], [Math.PI, 'π']].forEach(([v, s]) => ctx.fillText(s as string, PX(v as number), py1 + 14));
+        ctx.textAlign = 'right';
+        [0, 1, 2].forEach((v) => ctx.fillText(String(v), px0 - 5, PY(v) + 4));
+        ctx.textAlign = 'center';
+        ctx.fillText('Δθ', (px0 + px1) / 2, py1 + (narrow ? 26 : 30));
+        // Curves: 1 − IoU (dashed, scaled to the same axis), direct, sine
+        const curve = (f: (d: number) => number, col: string, lw: number, dash: number[], upTo: number) => {
+          ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.setLineDash(dash);
+          ctx.beginPath();
+          for (let k = 0; k <= 120; k++) {
+            const d = (Math.PI * k) / 120;
+            if (d > upTo + 1e-6) break;
+            k ? ctx.lineTo(PX(d), PY(f(d))) : ctx.moveTo(PX(d), PY(f(d)));
+          }
+          ctx.stroke(); ctx.setLineDash([]);
+        };
+        ctx.globalAlpha = fadeAll * (beat === 1 ? ease(ramp(t, T.sine + 0.3, T.sine + 0.8)) : 0);
+        curve((d) => 1 - iouAt(d), faint, 1.4, [4, 4], Math.PI);
+        ctx.globalAlpha = fadeAll * (beat === 0 ? 1 : 0.45);
+        curve((d) => sl1(d), red, 2, [], beat === 0 ? dth : Math.PI);
+        if (beat === 1) { ctx.globalAlpha = fadeAll; curve((d) => sl1(Math.sin(d)), teal, 2.4, [], dth); }
+        // Moving dot
+        ctx.globalAlpha = fadeAll;
+        ctx.fillStyle = beat === 0 ? red : teal;
+        ctx.beginPath(); ctx.arc(PX(dth), PY(loss), 4.5, 0, 2 * Math.PI); ctx.fill();
+        // Legend
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.textAlign = 'left';
+        const lx = px0 + 10;
+        ctx.fillStyle = red; ctx.fillText(narrow ? 'SmoothL1(Δθ)' : 'VoxelNet: SmoothL1(Δθ)', lx, py0 + 4);
+        if (beat === 1) {
+          ctx.fillStyle = teal; ctx.fillText(narrow ? 'SmoothL1(sin Δθ)' : 'SECOND: SmoothL1(sin Δθ)', lx, py0 + 20);
+          ctx.fillStyle = faint; ctx.fillText(narrow ? '1 − IoU' : '1 − BEV IoU (dashed)', lx, py0 + 36);
+        }
+        // "Same box" note at the flip
+        if (dth > Math.PI - 0.05) {
+          ctx.fillStyle = beat === 0 ? red : teal;
+          ctx.textAlign = 'right';
+          ctx.font = `600 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+          ctx.fillText(beat === 0 ? (narrow ? 'same box, max loss' : 'same box — largest loss ✗') : (narrow ? 'same box, 0 loss' : 'same box — zero loss ✓'), px1, beat === 0 ? PY(loss) + 18 : PY(0) - 10);
+        }
+      } else {
+        // Direction classifier: two softmax scores for "yaw > 0" (positive) / "yaw ≤ 0" (negative)
+        const yawPred = YAW_GT + Math.PI; // the regressed box, flipped
+        const wrap = Math.atan2(Math.sin(yawPred), Math.cos(yawPred));
+        const show = ease(ramp(t, T.dir + 0.8, T.dir + 1.6));
+        const rows = [['yaw > 0', 0.88], ['yaw ≤ 0', 0.12]] as const;
+        const pal = iconPalette();
+        const hw = narrow ? 34 : 62, hh = narrow ? 28 : 40;
+        drawBlock(ctx, 'conv2d', px0 - (narrow ? 30 : 50), py0 + 6, hw, hh, pal, { label: narrow ? undefined : '1 × 1 conv', sub: narrow ? undefined : 'direction head', active: ramp(t, T.dir + 0.4, T.dir + 1.0), alpha: fadeAll });
+        const bx = px0 + hw - (narrow ? 22 : 32), bw = px1 - bx - (narrow ? 0 : 20);
+        ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+        rows.forEach(([name, p], k) => {
+          const y = py0 + 16 + k * (narrow ? 36 : 44);
+          ctx.globalAlpha = fadeAll * show;
+          ctx.fillStyle = text; ctx.textAlign = 'left';
+          ctx.fillText(`${name}`, bx, y);
+          ctx.fillStyle = dark ? '#2a3445' : '#dfe4ec';
+          ctx.fillRect(bx, y + 6, bw, narrow ? 9 : 12);
+          ctx.fillStyle = k === 0 ? teal : faint;
+          ctx.fillRect(bx, y + 6, bw * p * show, narrow ? 9 : 12);
+          ctx.textAlign = 'right';
+          ctx.fillStyle = text;
+          ctx.fillText(p.toFixed(2), bx + bw, y);
+        });
+        const lines = [
+          [`regressed box: yaw = ${wrap.toFixed(2)} rad ≤ 0`, T.dir + 2.0],
+          [`classifier says yaw > 0 → turn the box by π`, T.dir + 3.4],
+          [`final yaw = ${YAW_GT.toFixed(2)} rad ✓`, T.dir + 5.6],
+        ] as const;
+        const linesShort = [`box yaw ${wrap.toFixed(2)} ≤ 0`, 'classifier: > 0 → add π', `yaw = ${YAW_GT.toFixed(2)} ✓`];
+        lines.forEach(([s, at], k) => {
+          ctx.globalAlpha = fadeAll * ramp(t, at, at + 0.4);
+          ctx.fillStyle = k === 2 ? teal : text;
+          ctx.textAlign = 'left';
+          ctx.font = `${k === 2 ? 600 : 500} ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+          ctx.fillText(narrow ? linesShort[k] : s, bx, py0 + (narrow ? 96 : 118) + k * (narrow ? 18 : 22), px1 - bx);
+        });
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.dir - 0.5); });
+    if (still) { frame(T.dir - 0.5); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

@@ -1,0 +1,209 @@
+---
+title: "MV3D: flatten the LiDAR, then fuse with the camera"
+category: object-detection
+order: 2
+summary: "Before detectors learned on raw points, MV3D turned the LiDAR scan into bird's-eye and front-view images, proposed 3D boxes with a 2D CNN and fused them with the camera — the image-style baseline every later LiDAR detector had to beat."
+date: 2026-10-30
+draft: true
+paper:
+  title: "Multi-View 3D Object Detection Network for Autonomous Driving"
+  authors: "Xiaozhi Chen, Huimin Ma, Ji Wan, Bo Li, Tian Xia"
+  venue: CVPR 2017
+  links:
+    - name: arXiv
+      url: https://arxiv.org/abs/1611.07759
+---
+
+import Figure from '../../../components/walkthroughs/Figure.astro';
+import ArchitectureFigure from '../../../components/walkthroughs/mv3d/ArchitectureFigure.astro';
+import BevEncodingFigure from '../../../components/walkthroughs/mv3d/BevEncodingFigure.astro';
+import FrontViewFigure from '../../../components/walkthroughs/mv3d/FrontViewFigure.astro';
+import DeepFusionFigure from '../../../components/walkthroughs/mv3d/DeepFusionFigure.astro';
+
+## Motivation & Main Contribution
+
+- **PointNet** showed how to learn on a point set — but on ~1k-point objects, not on a ~100k-point street scene.
+- The practical road in 2017 was the opposite: turn the LiDAR into **images** and reuse the mature 2D toolbox
+  (VGG, Faster R-CNN's RPN, ROI pooling).
+- MV3D is the strongest version of that idea, and the baseline that **VoxelNet** and **SECOND** compare against.
+- **Main contributions:**
+  - A compact **multi-view encoding** of the point cloud: a bird's-eye view (BEV) map (the paper abbreviates it BV) and a front-view (FV) map.
+  - A **3D proposal network** that generates 3D boxes from the bird's-eye view with 2D convolutions.
+  - A **region-based deep fusion** network that pools features of each proposal from BEV, FV and the RGB image
+    and mixes them layer by layer.
+- Reading tip: SECOND later calls MV3D the first method to turn point clouds into a **bird's-eye view** — the canvas most later detectors kept.
+
+## Challenges at the Time
+
+- **LiDAR is sparse and unordered**, but every strong detector of 2016 (Faster R-CNN, MS-CNN) expected a dense image.
+- **3D voxel grids + 3D CNNs** (Vote3Deep, 3D FCN, Deep Sliding Shapes) keep the geometry but are
+  computationally expensive.
+- **Front-view projection** (VeloFCN) is cheap, but objects change size with distance and occlude each other.
+- **Camera-only 3D** (Mono3D, 3DOP) has rich appearance but poor depth: at 3D IoU 0.7 their AP is in single digits
+  (Table 2 of the paper).
+- **Fusing LiDAR and camera** was mostly early fusion (concatenate inputs) or late fusion (merge outputs) —
+  neither lets the two views interact in the middle of the network.
+
+## Naive Questions
+
+- **Why not project the points onto the camera image and run a 2D detector?**
+  The projected LiDAR map is very sparse, and in the image plane objects change size with distance and occlude each other.
+- **Why bird's-eye view for proposals?**
+  Objects keep their physical size, rarely overlap on the ground plane, and their height varies little.
+- **Doesn't flattening throw away height?**
+  Partly. MV3D keeps some by slicing the cloud into $M$ height slices, one max-height map per slice.
+- **Why also a front view?**
+  It is a dense map in the sensor's own geometry and adds complementary information; the ablation shows it helps
+  when combined with BEV (Table 4).
+- **How do features from three different views line up?**
+  Through the 3D proposal: one 3D box is projected into each view, and each view is ROI-pooled separately.
+- **Why regress 8 corners instead of $(x, y, z, l, w, h, \theta)$?**
+  The paper found the redundant 24-D corner encoding worked better; the heading is recovered from the corners.
+
+## Key Idea
+
+> **Key idea.** Encode the point cloud as images (bird's-eye and front view), propose 3D boxes in the bird's-eye
+> view, then project each proposal into every view and fuse the region features deeply.
+
+Deep fusion, with $f_v$ the ROI-pooled feature of view $v$ and $H^v_l$ layer $l$ of that view's branch:
+
+$$
+f_0 = f_{BEV} \oplus f_{FV} \oplus f_{RGB}, \qquad
+f_l = H^{BEV}_l(f_{l-1}) \oplus H^{FV}_l(f_{l-1}) \oplus H^{RGB}_l(f_{l-1}), \quad l = 1, \dots, L
+$$
+
+- $\oplus$: element-wise **mean** (more flexible than concatenation when combined with drop-path).
+- Each branch reads the *joined* feature of the previous layer → views exchange information at every layer.
+
+## Dive into Model Architecture & Key Components
+
+<Figure>
+  <ArchitectureFigure />
+  <span slot="caption">MV3D end to end (after Fig. 1 of the paper), stage by stage: three input views with a VGG-16 branch each, 3D proposals from the bird's-eye view, and region-wise deep fusion of the three views.</span>
+</Figure>
+
+### The pipeline, step by step
+
+1. Encode the LiDAR into a BEV map and an FV map; take the RGB image as the third view.
+2. **3D Proposal Network** on BEV → 3D boxes (objectness + box regression), NMS → top 300 at test time.
+3. Project every proposal into BEV, FV and RGB; **ROI-pool** a fixed-length feature from each view.
+4. **Deep fusion** network → class scores + oriented 3D boxes (8 corners).
+
+Input sizes on KITTI (Section 3.4):
+
+| Stage | Operation | Size |
+|---|---|---|
+| Point cloud | crop to $[0, 70.4] \times [-40, 40]$ m, keep points inside the image | — |
+| BEV input | 0.1 m grid; $M$ height maps + density + intensity | $704 \times 800 \times (M + 2)$ |
+| FV input | cylindrical projection; height, distance, intensity | $64 \times 512 \times 3$ |
+| RGB input | up-scaled so the shortest side is 500 | — |
+| Backbone (per view) | VGG-16, channels halved, 4th pool removed | $8\times$ downsampled |
+| Proposal feature map | $2\times$ bilinear upsampling | $4\times$ downsampled ($176 \times 200$) |
+| 3D proposals | objectness + box regression on BEV anchors, NMS at BEV IoU 0.7 | 2000 (train) / 300 (test) boxes |
+| ROI pooling | project each proposal into BEV / FV / RGB, ROI-pool (after $4\times$/$4\times$/$2\times$ upsampling) | one fixed-length feature per view |
+| Deep fusion | fc6, fc7, fc8, element-wise mean after each layer | class + 24-D box |
+
+### Bird's-eye view and front-view encoding
+
+- **BEV map** (0.1 m cells):
+  - **Height:** the cloud is cut into $M$ equal slices; each slice gives a max-height map.
+  - **Intensity:** reflectance of the highest point in the cell.
+  - **Density:** $\min\!\left(1, \frac{\log(N + 1)}{\log 64}\right)$, with $N$ points in the cell.
+
+<Figure>
+  <BevEncodingFigure />
+  <span slot="caption">The bird's-eye-view encoding on a real 13 m × 7 m patch of a LiDAR scan (two parked cars and a wall), with $M = 4$ slices of 0.8 m. Each slice keeps only the highest point per 0.1 m cell; density counts all points. The intensity channel is not drawn, because this scan stores no reflectance.</span>
+</Figure>
+
+- **FV map:** project each point $(x, y, z)$ onto a cylinder:
+  $c = \lfloor \operatorname{atan2}(y, x) / \Delta\theta \rfloor$,
+  $r = \lfloor \operatorname{atan2}(z, \sqrt{x^2 + y^2}) / \Delta\phi \rfloor$,
+  with $\Delta\theta, \Delta\phi$ the laser's horizontal and vertical resolution → a dense $64 \times 512$ map.
+
+<Figure>
+  <FrontViewFigure />
+  <span slot="caption">The front-view encoding on a 140° sector of the same scan ($\Delta\theta = 1°$ and 64 rows here; nearest point per pixel). The map is dense, but two parked cars of about the same length cover very different widths, because in this view size shrinks with distance.</span>
+</Figure>
+
+- These are **hand-crafted** features: exactly the bottleneck VoxelNet will try to learn away.
+
+> **Builds on.** VeloFCN's cylindrical front-view projection of the point cloud (the paper's "as in [17]").
+
+### 3D Proposal Network: an RPN on the bird's-eye view
+
+- Box parameters $(x, y, z, l, w, h)$ in LiDAR coordinates; the BEV anchor is $(x_{bv}, y_{bv}, l_{bv}, w_{bv})$.
+- **Anchors (cars):** $(l, w) \in \{(3.9, 1.6), (1.0, 0.6)\}$, $h = 1.56$ m, rotated by $0°$ and $90°$ → $N = 4$ per position.
+  No orientation regression at this stage.
+- At 0.1 m, a car is only **5–40 pixels** in BEV → upsample the feature map $2\times$ instead of feeding a larger input.
+- Regression targets $(\Delta x, \Delta y, \Delta z, \Delta l, \Delta w, \Delta h)$: centre offsets normalised by anchor size,
+  $\Delta s = \log(s_{GT} / s_{anchor})$. Loss: cross-entropy (objectness) + Smooth $\ell_1$ (box).
+- Matching on BEV IoU: positive above 0.7, negative below 0.5.
+- **Empty anchors are removed** (integral image over the occupancy map) — an early hint at the sparsity SECOND will exploit.
+- NMS on BEV boxes at IoU 0.7; keep 2000 boxes for training, 300 for testing.
+
+> **Builds on.** Faster R-CNN's region proposal network (anchors, objectness + box regression, NMS) and a VGG-16 backbone — moved from the image to the bird's-eye view.
+
+### Region-based fusion: early, late, or deep?
+
+- **Early fusion:** join the three ROI features, then one network. **Late fusion:** three separate networks, join at the end.
+- **Deep fusion:** join after *every* layer (Key Idea equation), inspired by FractalNet and Deeply-Fused Nets.
+
+<Figure>
+  <DeepFusionFigure />
+  <span slot="caption">The three fusion schemes, with the ROI features of one proposal flowing left to right. Early and late fusion join the views once (by concatenation); deep fusion averages them after every layer, so each branch $H^v_l$ reads a feature that already mixes all three views. During training, drop-path removes random inputs of the joins.</span>
+</Figure>
+
+- Final head regresses the **8 box corners** (24 values, normalised by the proposal's diagonal);
+  RoIs are positive if BEV IoU > 0.5. Final NMS at BEV IoU 0.05.
+
+> **Builds on.** ROI pooling from Fast R-CNN (one per view), and FractalNet / Deeply-Fused Nets for joining the branches at every layer.
+
+### Regularising a three-branch network
+
+- **Drop-path:** each iteration picks global (keep one random view) or local (drop each join input with 50%) drop-path, 50/50.
+- **Auxiliary paths and losses:** extra per-view paths that share weights with the main network, each with the full
+  classification + box loss; removed at inference.
+- Deep fusion alone gives ~0.5% over early/late fusion; auxiliary losses add about 1% more (Table 3).
+
+> **Builds on.** Drop-path training from FractalNet.
+
+## Conclusion
+
+### Results
+
+KITTI car, validation split (roughly half of the 7,481 training frames each for train / val), IoU 0.7
+(Tables 1 and 2 of the paper):
+
+| Method | Data | 3D AP Easy <span class="better-up">↑</span> | 3D AP Mod. <span class="better-up">↑</span> | 3D AP Hard <span class="better-up">↑</span> | BEV AP Easy <span class="better-up">↑</span> | BEV AP Mod. <span class="better-up">↑</span> | BEV AP Hard <span class="better-up">↑</span> |
+|---|---|---|---|---|---|---|---|
+| Mono3D | Mono | 2.53 | 2.31 | 2.31 | 5.22 | 5.19 | 4.13 |
+| 3DOP | Stereo | 6.55 | 5.07 | 4.1 | 12.63 | 9.49 | 7.59 |
+| VeloFCN | LiDAR | 15.20 | 13.66 | 15.98 | 40.14 | 32.08 | 30.47 |
+| MV3D (BEV+FV) | LiDAR | 71.19 | 56.60 | 55.30 | 86.18 | 77.32 | 76.33 |
+| **MV3D (BEV+FV+RGB)** | LiDAR + Mono | **71.29** | **62.68** | **56.56** | **86.55** | **78.10** | **76.67** |
+
+- **Proposals:** with 300 proposals, 3D recall **99.1%** at IoU 0.25 and **91%** at IoU 0.5 (moderate, Fig. 5).
+- **Single views** (Table 4): BEV alone is best, FV alone worst; all three together are best overall.
+- **Fusion** (Table 3): deep fusion gives ~0.5% over early / late fusion; auxiliary losses add about 1% more.
+- Runtime about **0.36 s** per frame on a Titan X GPU.
+
+### Pros and Cons
+
+- **Pros**
+  - The bird's-eye view keeps objects at their physical size and rarely overlapping — a good canvas for proposals.
+  - Reuses the mature 2D toolbox (VGG-16, RPN, ROI pooling) on LiDAR.
+  - 3D proposals tie the views together: one box, projected into every view.
+- **Cons**
+  - Hand-crafted BEV / FV features fix in advance what the network may see; height is cut into a few slices.
+  - Three VGG branches and a two-stage head are slow (~0.36 s per frame).
+  - Needs the camera for its best result; deep fusion helps only modestly.
+
+### Future Work
+
+- Learn the point-cloud features end to end instead of hand-crafting the bird's-eye-view channels.
+- Keep the bird's-eye-view detector, but make it single-stage and much faster.
+
+### Next
+
+- [**VoxelNet**](/walkthroughs/object-detection/voxelnet/) replaces the hand-crafted BEV features with a learned
+  mini-PointNet inside each voxel, keeps the bird's-eye-view RPN and $0°/90°$ anchors, and beats MV3D with LiDAR alone.

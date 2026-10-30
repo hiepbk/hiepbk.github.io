@@ -1,0 +1,315 @@
+---
+// "Segmentation head: local + global": each point of the real car gets its own row of local features
+// (n × 64); a shared MLP (64, 128, 1024) lifts every row to n × 1024; max pooling takes the largest value
+// of each column (1 × 1024 global feature), which is copied back to every row and concatenated
+// (n × 1088); a shared MLP turns every row into m scores (n × m) → one label per point.
+// The part labels (roof / windows / body) are illustrative, derived from the point's height and position.
+import { loadCar, farthestPointSample } from '../../lib/walkthroughData';
+
+const N = 128;
+const points = farthestPointSample(loadCar(), N);
+// 0 = body, 1 = windows, 2 = roof
+const labels = points.map(([u, , z]) => (z >= 1.55 ? 2 : z >= 1.1 && u < 0.9 ? 1 : 0));
+---
+<canvas class="wt-canvas seghead-canvas" data-seg={JSON.stringify({ points, labels })}
+  role="img" aria-label="Each point's 64-d local feature is lifted by a shared MLP to 1024 features; the column-wise max over all points gives the 1024-d global feature, which is copied to every point and concatenated (n × 1088); a shared MLP then gives n × m scores, one part label per point"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../lib/figureClock';
+  import { iconPalette, drawBlock, drawArrow } from '../../lib/figureIcons';
+  type P = [number, number, number];
+  type Seg = { points: P[]; labels: number[] };
+
+  // Beats: local rows · lift to 1024 · max pool per column · copy + concat · shared MLP → labels
+  const HEADLINE = [
+    'Each point gets its own local feature: n × 64',
+    'A shared MLP (64, 128, 1024) lifts every point to 1024 features: n × 1024',
+    'Max pool: the largest value of each of the 1024 columns → global feature 1 × 1024',
+    'Copy the global feature to every point: n × (64 + 1024) = n × 1088',
+    'A shared MLP scores every row: n × m, one label per point',
+  ];
+  const HEADLINE_SHORT = [
+    'Each point: its own local feature, n × 64',
+    'Shared MLP lifts each point to 1024: n × 1024',
+    'Max of each column → global 1 × 1024',
+    'Global copied to every point: n × 1088',
+    'Shared MLP: n × m scores, one label per point',
+  ];
+  const TENSOR_TITLE = ['Local features n × 64', 'Point features n × 1024', 'Global feature 1 × 1024', 'Concatenated n × 1088', 'Scores n × m'];
+  const CAR_NOTE = (n: number) => [`n = ${n} points`, 'same MLP on every point', 'max over all n points', 'every point gets the global view', 'one part label per point'];
+  const TENSOR_NOTE = ['each row sees only its own point', 'shared MLP (64, 128, 1024) on each row', 'max of each column over the n rows', '1 × 1024 copied to all n rows', 'shared MLP (512, 256, 128, m)'];
+  const CAR_NOTE_SHORT = (n: number) => [`n = ${n}`, 'same MLP per point', 'max over all', 'global view', '1 label per point'];
+  const TENSOR_NOTE_SHORT = ['own point only', 'MLP (64,128,1024)', 'column-wise max', 'copied to rows', 'shared MLP'];
+  const PARTS = ['body', 'windows', 'roof'];
+
+  document.querySelectorAll<HTMLCanvasElement>('.seghead-canvas').forEach((canvas) => {
+    const { points: pts, labels }: Seg = JSON.parse(canvas.dataset.seg!);
+    const ctx = canvas.getContext('2d')!;
+    const N = pts.length, M = PARTS.length;
+
+    // Illustrative feature values in [0, 1]. The 64 and 1024 columns are drawn as 6 and 16 cells.
+    // The global feature really is the column-wise max of the point features.
+    let seed = 7;
+    const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const LOCAL_CELLS = 6, GLOBAL_CELLS = 16;
+    const w = Array.from({ length: LOCAL_CELLS }, () => [rand() * 6 - 3, rand() * 6 - 3, rand() * 6 - 3]);
+    const local = pts.map((p) => w.map((a) => 0.5 + 0.5 * Math.sin(a[0] * p[0] + a[1] * p[1] + a[2] * p[2] + 1)));
+    const w2 = Array.from({ length: GLOBAL_CELLS }, () => Array.from({ length: LOCAL_CELLS }, () => rand() * 4 - 2));
+    const pointFeat = local.map((f) => w2.map((row) => 0.5 + 0.5 * Math.tanh(row.reduce((s, v, k) => s + v * (f[k] - 0.5), 0))));
+    const winner = Array.from({ length: GLOBAL_CELLS }, (_, k) => pointFeat.reduce((b, f, i) => (f[k] > pointFeat[b][k] ? i : b), 0));
+    const global = winner.map((i, k) => pointFeat[i][k]);
+    const scores = labels.map((l) => PARTS.map((_, k) => (k === l ? 0.75 + 0.25 * rand() : 0.1 + 0.3 * rand())));
+
+    const T = { local: 0, lift: 6, pool: 12, copy: 18.5, mlp: 25, end: 33 };
+    const BEATS = [T.local, T.lift, T.pool, T.copy, T.mlp];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    const liftAt = (i: number) => T.lift + 0.6 + (2.6 * i) / N;          // row i goes through the MLP
+    const poolAt = (k: number) => T.pool + 0.6 + (4 * k) / GLOBAL_CELLS;  // column k is max-pooled
+    const copyAt = (i: number) => T.copy + 0.6 + i * 0.016;              // global copy slides into row i
+    const labelAt = (i: number) => T.mlp + 0.9 + (2.5 * i) / N;          // row i scored, point i coloured
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const ink = dark ? '#ffffff' : '#111827';
+      ctx.clearRect(0, 0, W, H);
+
+      let beat = 0;
+      while (beat + 1 < BEATS.length && t >= BEATS[beat + 1]) beat++;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const partColor = (l: number, a = 1) =>
+        [`hsl(222 80% ${dark ? 66 : 55}% / ${a})`, `hsl(178 75% ${dark ? 50 : 38}% / ${a})`, `hsl(36 92% ${dark ? 58 : 50}% / ${a})`][l];
+      const localShade = (f: number) => (dark ? `hsl(222 45% ${22 + f * 45}%)` : `hsl(222 55% ${88 - f * 50}%)`);
+      const featShade = (f: number) => (dark ? `hsl(190 40% ${20 + f * 45}%)` : `hsl(190 50% ${90 - f * 50}%)`);
+      const globalShade = (f: number) => (dark ? `hsl(265 45% ${22 + f * 45}%)` : `hsl(265 60% ${90 - f * 45}%)`);
+
+      // Layout: car on the left; on the right the local block, the 1024 block, the MLP arrow, the scores
+      const narrow = W < 520;
+      const pal = iconPalette();
+      // Between the local and the 1024 block: the shared MLP that lifts each row; the gap closes when the two
+      // blocks are concatenated. Between the concatenated block and the scores: max pool, later the scoring MLP.
+      const lw = narrow ? 20 : 34, gw = narrow ? 54 : 96, aw = narrow ? 50 : 76, sw = narrow ? 22 : 34, gap = 3;
+      const liftGap = narrow ? 42 : 66, liftOpen = 1 - ease(ramp(t, T.copy, T.copy + 0.6));
+      const TW = lw + gap + liftGap + gw + aw + sw;
+      const tx = W - TW - (narrow ? 6 : 30);
+      const lx = tx, gx = lx + lw + gap + liftGap * liftOpen, ax = gx + gw, sx = ax + aw;
+      const bw = narrow ? 30 : 46, bh = narrow ? 24 : 36;
+      const top = 104, rowsH = H - top - 6, rowH = rowsH / N;
+      const stripY = top - 26, stripH = 7;
+      const carCx = (tx - 30) / 2, carCy = H * 0.74;
+      const S = Math.min(narrow ? (tx - 12) / 5.2 : (tx - 60) / 7, H / 4.4);
+
+      // Car in a gentle 3D sway
+      const a = -0.55 + 0.18 * Math.sin(time * 0.6);
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const carXY = (p: P) => {
+        const u = p[0] * ca - p[1] * sa, v = p[0] * sa + p[1] * ca;
+        return [carCx + u * S, carCy - p[2] * S + v * S * 0.35] as const;
+      };
+
+      // Headline of the current beat, in red across the top
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = dark ? '#ff6b6b' : '#dc2626';
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+
+      // Titles with a status line that changes per beat (highlighted once something has changed)
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText('Point cloud', carCx, 46);
+      ctx.fillText(TENSOR_TITLE[beat], tx + TW / 2, 46, TW + 20);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText((narrow ? CAR_NOTE_SHORT : CAR_NOTE)(N)[beat], carCx, 64, tx - 8);
+      ctx.fillText((narrow ? TENSOR_NOTE_SHORT : TENSOR_NOTE)[beat], tx + TW / 2, 64, TW + 20);
+
+      // Column headers
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+      ctx.fillStyle = faint;
+      ctx.fillText('64', lx + lw / 2, top - 5);
+      if (beat >= 1) ctx.fillText('1024', gx + gw / 2, top - 5);
+      const arrowIn = ease(ramp(t, T.mlp + 0.3, T.mlp + 0.8));
+      if (beat === 4) {
+        ctx.globalAlpha = fadeAll * arrowIn;
+        ctx.fillText(`m = ${M}`, sx + sw / 2, top - 5);
+        ctx.globalAlpha = fadeAll;
+      }
+
+      // Rows: local features, then the 1024 point features, later the global copies, finally the scores
+      const cw = lw / LOCAL_CELLS, gcw = gw / GLOBAL_CELLS, scw = sw / M, rh = Math.max(1, rowH - 0.5);
+      const featOut = ramp(t, T.pool + 4.9, T.copy + 0.2); // point features fade once the max is taken
+      for (let i = 0; i < N; i++) {
+        const arrive = ease(ramp(t, 0.3 + i * 0.022, 0.85 + i * 0.022));
+        const ry = top + i * rowH;
+        if (arrive > 0.98) {
+          for (let k = 0; k < LOCAL_CELLS; k++) {
+            ctx.fillStyle = localShade(local[i][k]);
+            ctx.fillRect(lx + k * cw, ry, cw - 0.5, rh);
+          }
+        }
+        // n × 1024 point features (beats 2–3)
+        if (t >= liftAt(i) && featOut < 1) {
+          ctx.globalAlpha = fadeAll * (1 - featOut) * ease(ramp(t, liftAt(i), liftAt(i) + 0.3));
+          for (let k = 0; k < GLOBAL_CELLS; k++) {
+            ctx.fillStyle = featShade(pointFeat[i][k]);
+            ctx.fillRect(gx + k * gcw, ry, gcw - 0.5, rh);
+          }
+          ctx.globalAlpha = fadeAll;
+        }
+        // Copy of the global vector, sliding down from the strip into row i
+        const c = ease(ramp(t, copyAt(i), copyAt(i) + 0.5));
+        if (c > 0) {
+          const y = stripY + (ry - stripY) * c;
+          ctx.globalAlpha = fadeAll * (c < 1 ? 0.8 : 1);
+          for (let k = 0; k < GLOBAL_CELLS; k++) {
+            ctx.fillStyle = globalShade(global[k]);
+            ctx.fillRect(gx + k * gcw, y, gcw - 0.5, c < 1 ? stripH * (1 - c) + rh * c : rh);
+          }
+          ctx.globalAlpha = fadeAll;
+        }
+        // Scores of row i (the winning part in its colour)
+        if (t >= labelAt(i)) {
+          for (let k = 0; k < M; k++) {
+            ctx.fillStyle = k === labels[i] ? partColor(k) : partColor(k, 0.12 + 0.2 * scores[i][k]);
+            ctx.fillRect(sx + k * scw, ry, scw - 1, rh);
+          }
+        }
+
+        // Point in the car, and its copy flying to its row
+        const [px, py] = carXY(pts[i]);
+        const lab = ease(ramp(t, labelAt(i), labelAt(i) + 0.3));
+        ctx.fillStyle = lab > 0 ? partColor(labels[i]) : text;
+        ctx.beginPath(); ctx.arc(px, py, 2.4 + 0.5 * lab, 0, Math.PI * 2); ctx.fill();
+        if (arrive > 0 && arrive < 0.98) {
+          ctx.fillStyle = localShade(0.7);
+          const fx = px + (lx - px) * arrive, fy = py + (ry + rowH / 2 - py) * arrive;
+          ctx.beginPath(); ctx.arc(fx, fy, 2.2, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+
+      // Beat 2: the shared MLP sweeps down the rows (64 → 1024); the row in flight is linked through the block
+      if (liftOpen > 0) {
+        const mx = lx + lw + gap + (liftGap - bw) / 2, my = top + rowsH / 2 - bh / 2;
+        const act = ramp(t, T.lift + 0.3, T.lift + 0.6) * (1 - ramp(t, liftAt(N - 1) + 0.3, liftAt(N - 1) + 0.8));
+        ctx.globalAlpha = fadeAll * liftOpen;
+        drawBlock(ctx, 'mlp', mx, my, bw, bh, pal, { label: 'MLP', shared: true, active: act, compact: narrow });
+        if (beat === 1 && t < liftAt(N - 1) + 0.3) {
+          const r = Math.min(N - 1, Math.floor(ramp(t, liftAt(0), liftAt(N - 1)) * N)), ry = top + r * rowH + rowH / 2;
+          ctx.strokeStyle = accent; ctx.lineWidth = 1.2;
+          ctx.beginPath(); ctx.moveTo(lx + lw + 1, ry); ctx.lineTo(mx - 1, my + bh / 2); ctx.moveTo(mx + bw + 1, my + bh / 2); ctx.lineTo(gx - 1, ry); ctx.stroke();
+        }
+        ctx.globalAlpha = fadeAll;
+      }
+      if (beat === 1) {
+        const r = Math.min(N - 1, Math.floor(ramp(t, liftAt(0), liftAt(N - 1)) * N));
+        if (t < liftAt(N - 1) + 0.3) {
+          ctx.strokeStyle = ink;
+          ctx.lineWidth = 1.2;
+          ctx.strokeRect(lx - 1.5, top + r * rowH - 1.5, lw + 3, rowH + 3);
+          ctx.strokeRect(gx - 1.5, top + r * rowH - 1.5, gw + 3, rowH + 3);
+        }
+      }
+      // Max-pool block, right of the 1024 block at the height of the global strip (lit in beat 3)
+      if (beat >= 1 && beat <= 3) {
+        const ph = narrow ? 24 : 30, pw = narrow ? 30 : 40, px = ax + (aw - pw) / 2, py = stripY - 4;
+        const act = ramp(t, T.pool + 0.3, T.pool + 0.6) * (1 - ramp(t, T.copy - 0.3, T.copy + 0.2));
+        ctx.globalAlpha = fadeAll * (beat === 1 ? 0.35 : beat === 3 ? 1 - ramp(t, T.copy, T.copy + 0.5) : 1);
+        drawBlock(ctx, 'maxpool', px, py, pw, ph, pal, { label: 'max pool', active: act, compact: true });
+        ctx.globalAlpha = fadeAll;
+      }
+
+      // Beat 3: column-wise max — each column's largest cell is outlined and rises into the global strip
+      if (beat >= 2) {
+        for (let k = 0; k < GLOBAL_CELLS; k++) {
+          const p0 = poolAt(k);
+          if (t < p0) continue;
+          const wy = top + winner[k] * rowH;
+          if (beat === 2 && featOut < 1) {
+            ctx.globalAlpha = fadeAll * (1 - featOut);
+            if (t < p0 + 0.6) { // scanning this column
+              ctx.strokeStyle = faint;
+              ctx.lineWidth = 1;
+              ctx.strokeRect(gx + k * gcw - 0.5, top - 1, gcw, rowsH + 2);
+            }
+            ctx.strokeStyle = ink;
+            ctx.lineWidth = 1.4;
+            ctx.strokeRect(gx + k * gcw - 0.5, wy - 1, gcw, rh + 2);
+          }
+          const up = ease(ramp(t, p0 + 0.15, p0 + 0.55));
+          ctx.globalAlpha = fadeAll;
+          ctx.fillStyle = globalShade(global[k]);
+          ctx.fillRect(gx + k * gcw, wy + (stripY - wy) * up, gcw - 0.5, rh + (stripH - rh) * up);
+        }
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = accent;
+        ctx.textAlign = 'right';
+        ctx.fillText('1 × 1024', lx - 5, stripY + stripH - 0.5);
+        ctx.textAlign = 'center';
+      }
+
+      // Beat 5: shared MLP arrow, and the row being scored highlighted in the concatenated block
+      if (beat === 4) {
+        const midY = top + rowsH / 2;
+        ctx.globalAlpha = fadeAll * arrowIn;
+        const mx = ax + (aw - bw) / 2, scan0 = ramp(t, labelAt(0), labelAt(N - 1));
+        drawArrow(ctx, ax + 2, midY, mx - 2, midY, pal);
+        drawBlock(ctx, 'mlp', mx, midY - bh / 2, bw, bh, pal, { label: narrow ? 'MLP' : 'shared MLP', shared: true, active: scan0 > 0 && scan0 < 1 ? 1 : 0.3, compact: narrow });
+        drawArrow(ctx, mx + bw + 2, midY, sx - 3, midY, pal);
+        const scan = ramp(t, labelAt(0), labelAt(N - 1));
+        if (scan > 0 && scan < 1) {
+          ctx.strokeStyle = ink;
+          ctx.lineWidth = 1.2;
+          ctx.strokeRect(lx - 1.5, top + scan * (N - 1) * rowH - 1.5, sx + sw - lx + 3, rowH + 3);
+        }
+
+        // Legend under the car
+        ctx.globalAlpha = fadeAll * ease(ramp(t, labelAt(0), labelAt(0) + 0.5));
+        ctx.font = `500 ${narrow ? 10 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.textAlign = 'left';
+        const items = [2, 1, 0], widths = items.map((l) => 22 + ctx.measureText(PARTS[l]).width);
+        let x = Math.max(8, carCx - widths.reduce((s, v) => s + v, 0) / 2 + 4);
+        items.forEach((l, k) => {
+          ctx.fillStyle = partColor(l);
+          ctx.beginPath(); ctx.arc(x, H - 10, 4, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = text;
+          ctx.fillText(PARTS[l], x + 8, H - 6);
+          x += widths[k];
+        });
+        ctx.textAlign = 'center';
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.end - 1); });
+    if (still) { frame(T.end - 1); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

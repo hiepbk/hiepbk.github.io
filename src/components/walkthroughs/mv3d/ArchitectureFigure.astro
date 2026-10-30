@@ -1,0 +1,313 @@
+---
+// MV3D's main architecture (after Fig. 1 of the paper: 3D proposal network → region-based fusion network).
+// One stage per row of the tensor-shape table in the article (same names and shapes), grouped like the paper's figure.
+---
+<canvas class="wt-canvas mv3d-arch-canvas"
+  role="img" aria-label="MV3D stage by stage, one stage per row of the shape table: the point cloud becomes a bird's-eye-view and a front-view map, each view and the camera image go through a VGG-16 backbone, 3D proposals come from the bird's-eye view, are ROI-pooled in the three views and fused deeply into class scores and 3D boxes"></canvas>
+
+<style>
+  canvas.wt-canvas.mv3d-arch-canvas { height: 420px; }
+  @media (max-width: 600px) { canvas.wt-canvas.mv3d-arch-canvas { height: 300px; } }
+</style>
+
+<script>
+  import { runPipeline, type PipeSpec } from '../../../lib/walkthroughFiguresAClient';
+
+  const SPEC: PipeSpec = {
+  "cols": 9,
+  "rows": 3,
+  "nodes": [
+    {
+      "id": "pc",
+      "col": 0,
+      "row": 0.5,
+      "step": 0,
+      "kind": "points",
+      "label": "Point cloud",
+      "sub": "cropped"
+    },
+    {
+      "id": "bv",
+      "col": 1,
+      "row": 0,
+      "step": 1,
+      "kind": "bev",
+      "label": "BEV input",
+      "sub": "704×800×(M+2)"
+    },
+    {
+      "id": "fv",
+      "col": 1,
+      "row": 1,
+      "step": 2,
+      "kind": "fv",
+      "label": "FV input",
+      "sub": "64×512×3"
+    },
+    {
+      "id": "rgb",
+      "col": 1,
+      "row": 2,
+      "step": 3,
+      "kind": "image",
+      "label": "RGB input",
+      "sub": "short side 500"
+    },
+    {
+      "id": "cbv",
+      "col": 2,
+      "row": 0,
+      "step": 4,
+      "kind": "backbone",
+      "label": "Backbone",
+      "sub": "8× down"
+    },
+    {
+      "id": "cfv",
+      "col": 2,
+      "row": 1,
+      "step": 4,
+      "kind": "backbone",
+      "label": "Backbone",
+      "sub": "8× down"
+    },
+    {
+      "id": "crgb",
+      "col": 2,
+      "row": 2,
+      "step": 4,
+      "kind": "backbone",
+      "label": "Backbone",
+      "sub": "8× down"
+    },
+    {
+      "id": "pm",
+      "col": 3,
+      "row": 0,
+      "step": 5,
+      "kind": "map",
+      "label": "Proposal feature map",
+      "sub": "176×200"
+    },
+    {
+      "id": "pn",
+      "col": 4,
+      "row": 0,
+      "step": 6,
+      "kind": "rpn",
+      "label": "Proposal net",
+      "sub": "obj. + box"
+    },
+    {
+      "id": "pr",
+      "col": 5,
+      "row": 0,
+      "step": 6,
+      "kind": "proposals",
+      "label": "3D proposals",
+      "sub": "300 (test)"
+    },
+    {
+      "id": "rbv",
+      "col": 6,
+      "row": 0,
+      "step": 7,
+      "kind": "roi",
+      "label": "ROI pool BEV"
+    },
+    {
+      "id": "rfv",
+      "col": 6,
+      "row": 1,
+      "step": 7,
+      "kind": "roi",
+      "label": "ROI pool FV"
+    },
+    {
+      "id": "rrgb",
+      "col": 6,
+      "row": 2,
+      "step": 7,
+      "kind": "roi",
+      "label": "ROI pool RGB"
+    },
+    {
+      "id": "fu",
+      "col": 7,
+      "row": 1,
+      "step": 8,
+      "kind": "mlp",
+      "label": "Deep fusion",
+      "sub": "fc6, fc7, fc8"
+    },
+    {
+      "id": "out",
+      "col": 8,
+      "row": 1,
+      "step": 9,
+      "kind": "boxes",
+      "label": "3D boxes",
+      "sub": "class + 24-D"
+    }
+  ],
+  "edges": [
+    [
+      "pc",
+      "bv"
+    ],
+    [
+      "pc",
+      "fv"
+    ],
+    [
+      "bv",
+      "cbv"
+    ],
+    [
+      "fv",
+      "cfv"
+    ],
+    [
+      "rgb",
+      "crgb"
+    ],
+    [
+      "cbv",
+      "pm"
+    ],
+    [
+      "pm",
+      "pn"
+    ],
+    [
+      "pn",
+      "pr"
+    ],
+    [
+      "pr",
+      "rbv"
+    ],
+    [
+      "pr",
+      "rfv"
+    ],
+    [
+      "pr",
+      "rrgb"
+    ],
+    [
+      "cfv",
+      "rfv"
+    ],
+    [
+      "crgb",
+      "rrgb"
+    ],
+    [
+      "rbv",
+      "fu"
+    ],
+    [
+      "rfv",
+      "fu"
+    ],
+    [
+      "rrgb",
+      "fu"
+    ],
+    [
+      "fu",
+      "out"
+    ]
+  ],
+  "steps": [
+    {
+      "say": "Point cloud: cropped to the front range and to the image",
+      "short": "Point cloud (cropped)",
+      "row": "Point cloud",
+      "shape": "[0, 70.4] × [−40, 40] m, inside the image"
+    },
+    {
+      "say": "BEV input: M height maps + density + intensity on a 0.1 m grid",
+      "short": "BEV input",
+      "row": "BEV input",
+      "shape": "704 × 800 × (M + 2)"
+    },
+    {
+      "say": "FV input: cylindrical projection; height, distance, intensity",
+      "short": "FV input",
+      "row": "FV input",
+      "shape": "64 × 512 × 3"
+    },
+    {
+      "say": "RGB input: the camera image, up-scaled",
+      "short": "RGB input",
+      "row": "RGB input",
+      "shape": "shortest side 500"
+    },
+    {
+      "say": "Backbone per view: VGG-16, channels halved, 4th pool removed",
+      "short": "VGG-16 per view",
+      "row": "Backbone (per view)",
+      "shape": "8× downsampled"
+    },
+    {
+      "say": "Proposal feature map: the BEV features upsampled 2×",
+      "short": "BEV features upsampled 2×",
+      "row": "Proposal feature map",
+      "shape": "4× downsampled (176 × 200)"
+    },
+    {
+      "say": "3D proposals: objectness + box regression on BEV anchors, NMS",
+      "short": "3D proposals from BEV",
+      "row": "3D proposals",
+      "shape": "2000 (train) / 300 (test) boxes"
+    },
+    {
+      "say": "ROI pooling: project each proposal into BEV, FV and the image",
+      "short": "Project + ROI pool",
+      "row": "ROI pooling",
+      "shape": "one fixed-length feature per view"
+    },
+    {
+      "say": "Deep fusion: fc6, fc7, fc8 with an element-wise mean after each layer",
+      "short": "Deep fusion",
+      "row": "Deep fusion",
+      "shape": "class + 24-D box (8 corners)"
+    },
+    {
+      "say": "Output: class scores and oriented 3D boxes",
+      "short": "Output: 3D boxes",
+      "row": "Output (after the table)",
+      "shape": "final NMS at BEV IoU 0.05"
+    }
+  ],
+  "groups": [
+    {
+      "label": "3D Proposal Network",
+      "col0": 2,
+      "col1": 5,
+      "row0": 0,
+      "row1": 0,
+      "steps": [
+        5,
+        6
+      ]
+    },
+    {
+      "label": "Region-based Fusion Network",
+      "col0": 6,
+      "col1": 8,
+      "row0": 0,
+      "row1": 2,
+      "steps": [
+        7,
+        8,
+        9
+      ]
+    }
+  ]
+};
+
+  document.querySelectorAll<HTMLCanvasElement>('.mv3d-arch-canvas').forEach((canvas) => runPipeline(canvas, SPEC));
+</script>

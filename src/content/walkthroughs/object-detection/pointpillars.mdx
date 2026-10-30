@@ -1,0 +1,205 @@
+---
+title: "PointPillars: drop the height axis"
+category: object-detection
+order: 5
+summary: "PointPillars makes every voxel as tall as the scene, encodes each pillar with a one-layer PointNet and hands a 2D pseudo-image to a plain 2D CNN — no 3D convolution anywhere, and 3D detection at 62 Hz."
+date: 2026-10-30
+draft: true
+paper:
+  title: "PointPillars: Fast Encoders for Object Detection from Point Clouds"
+  authors: "Alex H. Lang, Sourabh Vora, Holger Caesar, Lubing Zhou, Jiong Yang, Oscar Beijbom"
+  venue: CVPR 2019
+  links:
+    - name: arXiv
+      url: https://arxiv.org/abs/1812.05784
+    - name: Code
+      url: https://github.com/nutonomy/second.pytorch
+---
+
+import Figure from '../../../components/walkthroughs/Figure.astro';
+import ArchitectureFigure from '../../../components/walkthroughs/pointpillars/ArchitectureFigure.astro';
+import DecorationFigure from '../../../components/walkthroughs/pointpillars/DecorationFigure.astro';
+
+## Motivation & Main Contribution
+
+- **VoxelNet** runs at 4.4 Hz; **SECOND** reaches 20 Hz with sparse convolution, but its 3D layers remain the bottleneck.
+- Question: do we need 3D convolution at all? After the middle layers, both detectors flatten height into channels anyway.
+- PointPillars answers no: use **pillars** — voxels spanning the full height — so the grid is 2D from the start.
+- **Main contributions:**
+  - A **pillar encoder**: a simplified PointNet per pillar, scattered into a 2D **pseudo-image**.
+  - A detector built only from **2D convolutions** that runs at **62 Hz**, 2–4× faster than prior methods.
+  - State of the art on KITTI BEV and 3D among published methods by mAP, LiDAR only.
+- Reading tip: the pillar encoder is the simplest possible use of **PointNet** in a detector — one linear layer and a max.
+
+## Challenges at the Time
+
+- **3D convolutions are slow**, even sparse ones: VoxelNet's encoder takes 190 ms; SECOND's open-source encoder 48 ms.
+- **Fixed BEV encoders** (MV3D, PIXOR, Complex-YOLO) are fast but hand-crafted and need re-engineering for new sensors.
+- **Vertical binning** is one more hyper-parameter to tune by hand.
+- **Sparsity:** at $0.16^2$ m² cells a 64-beam scan has only 6k–9k non-empty pillars in the KITTI range — about 97% empty.
+
+## Naive Questions
+
+- **Doesn't a pillar lose all height information?**
+  No: each point keeps its $z$ (and offsets) as input features; the PointNet learns the vertical shape.
+- **Then why did VoxelNet need 3D convolutions?**
+  To aggregate across height; with pillars that aggregation happens inside the per-pillar PointNet.
+- **How can a PointNet output become an image?**
+  Each pillar vector is written back to its $(x, y)$ cell; empty cells stay zero → a $C \times H \times W$ pseudo-image.
+- **Isn't one linear layer too weak?**
+  The paper uses one PointNet instead of VoxelNet's two; it saved 2.5 ms with no loss in accuracy.
+- **Why care about 62 Hz if a LiDAR spins at 20 Hz?**
+  KITTI uses only the ~10% of points in the camera view, and cars run on embedded GPUs.
+- **Learned vs fixed encoder — how big is the gap?**
+  At equal backbone, learned encoders win at every resolution, and more so with larger pillars (Table 4).
+
+## Key Idea
+
+> **Key idea.** Make each voxel a full-height pillar, encode it with a tiny PointNet, scatter the vectors into a
+> 2D pseudo-image, and detect with a 2D CNN — no 3D convolution anywhere.
+
+Encoder for pillar $p$ with points $\hat l_1, \dots, \hat l_N$:
+
+$$
+f_p = \operatorname{MAX}_{i=1..N}\, \operatorname{ReLU}\big(\operatorname{BN}(W \hat l_i)\big) \in \mathbb{R}^{C},
+\qquad \text{pseudo-image}[:, y_p, x_p] = f_p
+$$
+
+- $\hat l_i \in \mathbb{R}^9$: the decorated point $(x, y, z, r, x_c, y_c, z_c, x_p, y_p)$ — see below.
+- $W$: one linear layer (a $1 \times 1$ convolution), shared by all points and pillars; $C = 64$.
+- $(x_p, y_p)$ in the second formula: the pillar's grid cell.
+
+## Dive into Model Architecture & Key Components
+
+<Figure>
+  <ArchitectureFigure />
+  <span slot="caption">PointPillars end to end (after Fig. 2 of the paper), stage by stage, with the tensor shapes of the car network: a one-layer PointNet per pillar, a pseudo-image, and from there only 2D convolutions.</span>
+</Figure>
+
+### PointPillars, step by step (car network)
+
+Range $x \in (0, 70.4)$, $y \in (-40, 40)$, $z \in (-3, 1)$ m; pillar size 0.16 m; at most $P = 12000$ pillars and
+$N = 100$ points per pillar (Section 4.2):
+
+| Stage | Operation | Shape |
+|---|---|---|
+| Input | points inside the camera view | $n \times 4$ $(x, y, z, r)$ |
+| Pillarize + decorate | group by $(x, y)$ cell, add 5 features, sample or zero-pad | $D \times P \times N = 9 \times 12000 \times 100$ |
+| Linear + BN + ReLU | shared over all points | $64 \times 12000 \times 100$ |
+| Max | over the points of each pillar | $64 \times 12000$ |
+| Scatter | write each pillar to its cell | $64 \times H \times W$ |
+| Block1(S=2, L=4, F=64) | 3×3 convs | $64 \times H/2 \times W/2$ |
+| Block2(4, 6, 128) | | $128 \times H/4 \times W/4$ |
+| Block3(8, 6, 256) | | $256 \times H/8 \times W/8$ |
+| Up1, Up2, Up3 → stride 2 | transposed conv to 128 each, concat | $384 \times H/2 \times W/2$ |
+| SSD head | anchors at $0°$ / $90°$ | class, box (7), direction |
+
+- From the stated range and pillar size, $H \times W = 500 \times 440$ cells.
+- Pedestrian / cyclist: first block stride $S = 1$ instead of 2; range $x \in (0, 48)$, $y \in (-20, 20)$, $z \in (-2.5, 0.5)$ m.
+
+### Pillars and point decoration
+
+- Grid only in $x$–$y$; **no binning in $z$**.
+- Each point $(x, y, z, r)$ gets:
+  - $x_c, y_c, z_c$: offset from the mean of the points in its pillar (VoxelNet's decoration);
+  - $x_p, y_p$: offset from the pillar's $x, y$ centre (new; +0.5 mAP and more reproducible runs, Section 7.3).
+
+<Figure>
+  <DecorationFigure />
+  <span slot="caption">Decoration of one real pillar ($0.16 \times 0.16$ m, all heights) on the side of a parked car. Each point keeps its own $z$, so height is not lost; the offsets tell the PointNet where the point sits relative to the other points of its pillar and to the pillar's cell. $r$ is shown as "–" because this scan stores no reflectance.</span>
+</Figure>
+- Fixed-size tensor $(D, P, N)$: too many pillars or points → random sampling; too few → zero padding.
+
+> **Builds on.** VoxelNet's decoration (offsets to the mean of the points, [walkthrough 03](/walkthroughs/object-detection/voxelnet/)); $x_p, y_p$ are new.
+
+### Pillar Feature Net: PointNet with one layer
+
+- Linear → BatchNorm → ReLU on every point, then max over the pillar's points: exactly PointNet's
+  "shared MLP + max pool", with an MLP of depth one.
+- Compared with **VoxelNet's VFE**: one layer instead of two stacked VFEs, and no concatenation back to the points.
+- Encoding time **1.3 ms** vs 190 ms for VoxelNet's encoder (Section 6).
+
+> **Builds on.** PointNet's shared MLP + max pool ([walkthrough 01](/walkthroughs/object-detection/pointnet/)).
+
+### Backbone and head: just a 2D detector
+
+- Backbone like VoxelNet's RPN: a top-down path of three blocks, each block upsampled back to stride $S$ and concatenated.
+- **SSD** head; anchors matched by 2D (BEV) IoU, height and elevation are extra regression targets.
+- Car anchor $w, l, h = (1.6, 3.9, 1.5)$ m at $z = -1$ m, thresholds 0.6 / 0.45.
+  Pedestrian $(0.6, 0.8, 1.73)$ and cyclist $(0.6, 1.76, 1.73)$ at $z = -0.6$ m, thresholds 0.5 / 0.35.
+- Axis-aligned NMS at IoU 0.5: similar accuracy to rotated NMS, much faster.
+
+> **Builds on.** VoxelNet's RPN-style backbone and anchors, and the SSD detection head.
+
+### Loss: SECOND's recipe
+
+$$
+\mathcal{L} = \frac{1}{N_{pos}} \left( \beta_{loc} \mathcal{L}_{loc} + \beta_{cls} \mathcal{L}_{cls} + \beta_{dir} \mathcal{L}_{dir} \right),
+\qquad \beta_{loc} = 2,\ \beta_{cls} = 1,\ \beta_{dir} = 0.2
+$$
+
+- $\mathcal{L}_{loc}$: Smooth $\ell_1$ on the 7 residuals, with $\Delta\theta = \sin(\theta^{gt} - \theta^a)$ (SECOND).
+- $\mathcal{L}_{cls}$: focal loss, $\alpha = 0.25$, $\gamma = 2$. $\mathcal{L}_{dir}$: softmax over discretised headings.
+- Adam, learning rate $2 \times 10^{-4}$, decay 0.8 every 15 epochs, 160 epochs; weights initialised randomly (no pre-training).
+
+> **Builds on.** SECOND's losses (sine angle residual, focal loss, direction classifier) and GT-sampling ([walkthrough 04](/walkthroughs/object-detection/second/)).
+
+### Where the speed comes from
+
+- Runtime breakdown (car network, i7 CPU + 1080 Ti GPU): load and filter 1.4 ms, pillarize and decorate 2.7 ms,
+  upload to GPU 2.9 ms, encode 1.3 ms, scatter 0.1 ms, backbone + head 7.7 ms, NMS 0.1 ms → **16.2 ms**.
+- **Slimmer design:** one PointNet (−2.5 ms), first block lowered to 64 channels (−4.5 ms), upsampled features
+  halved to 128 (−3.9 ms) — none of them hurt accuracy.
+- **TensorRT:** 45.5% faster than the 42.4 Hz PyTorch pipeline.
+- **Pillar size trades speed for accuracy:** sizes from $0.12^2$ to $0.28^2$ m²; at $0.28^2$ m² it runs at **105 Hz**
+  at similar accuracy to previous methods (Fig. 5).
+
+### Augmentation
+
+- **GT-sampling** from SECOND: 15 cars, 0 pedestrians, 8 cyclists pasted per sample.
+- **Per-box:** rotation $U[-\pi/20, \pi/20]$, translation $\mathcal{N}(0, 0.25)$ — much milder than VoxelNet / SECOND;
+  more per-box augmentation hurt pedestrians (Section 7.2).
+- **Global:** mirror flip along $x$, rotation and scaling, translation $\mathcal{N}(0, 0.2)$.
+
+## Conclusion
+
+### Results
+
+KITTI test, 3D detection (Table 2 of the paper; mAP over car / pedestrian / cyclist, moderate):
+
+| Method | Modality | Speed (Hz) <span class="better-up">↑</span> | mAP Mod. <span class="better-up">↑</span> | Car Easy <span class="better-up">↑</span> | Car Mod. <span class="better-up">↑</span> | Car Hard <span class="better-up">↑</span> |
+|---|---|---|---|---|---|---|
+| MV3D | LiDAR & image | 2.8 | N/A | 71.09 | 62.35 | 55.12 |
+| ContFuse | LiDAR & image | 16.7 | N/A | 82.54 | 66.22 | 64.04 |
+| RoarNet | LiDAR & image | 10 | N/A | **83.71** | 73.04 | 59.16 |
+| AVOD-FPN | LiDAR & image | 10 | 55.62 | 81.94 | 71.88 | 66.38 |
+| F-PointNet | LiDAR & image | 5.9 | 57.35 | 81.20 | 70.39 | 62.19 |
+| VoxelNet | LiDAR | 4.4 | 49.05 | 77.47 | 65.11 | 57.73 |
+| SECOND | LiDAR | 20 | 56.69 | 83.13 | 73.66 | 66.20 |
+| **PointPillars** | LiDAR | **62** | **59.20** | 79.05 | **74.99** | **68.30** |
+
+- **BEV** (Table 1): car 88.35 / 86.10 / 79.83; mAP (moderate) 66.19 — the highest in the table.
+- **Validation, moderate:** 3D AP 77.98 (car), 57.86 (pedestrian), 66.02 (cyclist).
+- **Encoder study** (Table 4, BEV mAP on val, same network): at $0.16^2$ m² PointPillars 73.7 vs VoxelNet 74.4 vs
+  MV3D's fixed encoder 72.8; at $0.28^2$ m² 72.0 vs 71.9 vs 67.6.
+
+### Pros and Cons
+
+- **Pros**
+  - No 3D convolution anywhere: a one-layer PointNet per pillar, then a plain 2D CNN — 62 Hz (105 Hz with larger pillars).
+  - Learned encoder: no hand-tuned vertical binning, and it beats fixed encoders at every pillar size.
+  - Simple to implement and deploy (TensorRT); it became the go-to fast LiDAR baseline.
+- **Cons**
+  - Not the best everywhere: lower easy-car 3D AP than SECOND.
+  - Pedestrians and cyclists are confused with each other and with poles.
+  - One vector summarises a whole pillar, so fine vertical detail is compressed early.
+
+### Future Work
+
+- Recover fine geometry from the raw points, e.g. a second refinement stage.
+- Better small-object (pedestrian, cyclist) detection.
+
+### Next
+
+- [**PointRCNN**](/walkthroughs/object-detection/pointrcnn/) — the point-based answer: segment the foreground points,
+  propose boxes from them, then refine each box with its raw points.

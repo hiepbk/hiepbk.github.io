@@ -1,0 +1,277 @@
+---
+// PointPillars' main architecture (after Fig. 2 of the paper: pillar feature net → backbone (2D CNN) → detection head (SSD)), car network.
+// One stage per row of the tensor-shape table in the article (same names and shapes), grouped like the paper's figure.
+---
+<canvas class="wt-canvas pointpillars-arch-canvas"
+  role="img" aria-label="PointPillars stage by stage, one stage per row of the shape table: pillars with decorated points, a shared linear layer and a max per pillar, a scatter into a pseudo-image, three 2D convolution blocks upsampled and concatenated, and an SSD detection head"></canvas>
+
+<style>
+  canvas.wt-canvas.pointpillars-arch-canvas { height: 430px; }
+  @media (max-width: 600px) { canvas.wt-canvas.pointpillars-arch-canvas { height: 300px; } }
+</style>
+
+<script>
+  import { runPipeline, type PipeSpec } from '../../../lib/walkthroughFiguresAClient';
+
+  const SPEC: PipeSpec = {
+  "cols": 5,
+  "rows": 3,
+  "nodes": [
+    {
+      "id": "in",
+      "col": 0,
+      "row": 0,
+      "step": 0,
+      "kind": "points",
+      "label": "Input",
+      "sub": "n×4"
+    },
+    {
+      "id": "pil",
+      "col": 1,
+      "row": 0,
+      "step": 1,
+      "kind": "bev",
+      "label": "Pillarize + decorate",
+      "sub": "9×12000×100"
+    },
+    {
+      "id": "lin",
+      "col": 2,
+      "row": 0,
+      "step": 2,
+      "kind": "mlp",
+      "label": "Linear + BN + ReLU",
+      "sub": "64×12000×100",
+      "shared": true
+    },
+    {
+      "id": "mx",
+      "col": 3,
+      "row": 0,
+      "step": 3,
+      "kind": "maxpool",
+      "label": "Max",
+      "sub": "64×12000"
+    },
+    {
+      "id": "sc",
+      "col": 4,
+      "row": 0,
+      "step": 4,
+      "kind": "map",
+      "label": "Scatter",
+      "sub": "64×H×W"
+    },
+    {
+      "id": "b1",
+      "col": 0,
+      "row": 1,
+      "step": 5,
+      "kind": "conv2d",
+      "label": "Block1(S=2, L=4, F=64)",
+      "sub": "64×H/2×W/2"
+    },
+    {
+      "id": "b2",
+      "col": 1,
+      "row": 1,
+      "step": 6,
+      "kind": "conv2d",
+      "label": "Block2(4, 6, 128)",
+      "sub": "128×H/4×W/4"
+    },
+    {
+      "id": "b3",
+      "col": 2,
+      "row": 1,
+      "step": 7,
+      "kind": "conv2d",
+      "label": "Block3(8, 6, 256)",
+      "sub": "256×H/8×W/8"
+    },
+    {
+      "id": "up",
+      "col": 3,
+      "row": 1,
+      "step": 8,
+      "kind": [
+        "conv2d",
+        "concat"
+      ],
+      "label": "Up1, Up2, Up3",
+      "sub": "384×H/2×W/2"
+    },
+    {
+      "id": "ssd",
+      "col": 0,
+      "row": 2,
+      "step": 9,
+      "kind": "conv2d",
+      "label": "SSD head",
+      "sub": "cls · box · dir"
+    },
+    {
+      "id": "out",
+      "col": 1,
+      "row": 2,
+      "step": 10,
+      "kind": "boxes",
+      "label": "3D boxes",
+      "sub": "oriented"
+    }
+  ],
+  "edges": [
+    [
+      "in",
+      "pil"
+    ],
+    [
+      "pil",
+      "lin"
+    ],
+    [
+      "lin",
+      "mx"
+    ],
+    [
+      "mx",
+      "sc"
+    ],
+    [
+      "sc",
+      "b1"
+    ],
+    [
+      "b1",
+      "b2"
+    ],
+    [
+      "b2",
+      "b3"
+    ],
+    [
+      "b3",
+      "up"
+    ],
+    [
+      "up",
+      "ssd"
+    ],
+    [
+      "ssd",
+      "out"
+    ]
+  ],
+  "steps": [
+    {
+      "say": "Input: the raw LiDAR points in the camera view",
+      "short": "Input: raw points",
+      "row": "Input",
+      "shape": "n × 4 (x, y, z, r)"
+    },
+    {
+      "say": "Pillarize + decorate: group by (x, y) cell, add 5 features, sample or zero-pad",
+      "short": "Pillars + 9-D decoration",
+      "row": "Pillarize + decorate",
+      "shape": "D × P × N = 9 × 12000 × 100"
+    },
+    {
+      "say": "One Linear + BN + ReLU, shared over all points: a one-layer PointNet",
+      "short": "Shared Linear + BN + ReLU",
+      "row": "Linear + BN + ReLU",
+      "shape": "64 × 12000 × 100"
+    },
+    {
+      "say": "Max over the points of each pillar: one vector per pillar",
+      "short": "Max per pillar",
+      "row": "Max",
+      "shape": "64 × 12000"
+    },
+    {
+      "say": "Scatter: write each pillar vector to its cell → a pseudo-image",
+      "short": "Scatter → pseudo-image",
+      "row": "Scatter",
+      "shape": "64 × H × W"
+    },
+    {
+      "say": "Backbone block 1: 3 × 3 convs, stride 2",
+      "short": "Block 1",
+      "row": "Block1(S=2, L=4, F=64)",
+      "shape": "64 × H/2 × W/2"
+    },
+    {
+      "say": "Backbone block 2",
+      "short": "Block 2",
+      "row": "Block2(4, 6, 128)",
+      "shape": "128 × H/4 × W/4"
+    },
+    {
+      "say": "Backbone block 3",
+      "short": "Block 3",
+      "row": "Block3(8, 6, 256)",
+      "shape": "256 × H/8 × W/8"
+    },
+    {
+      "say": "Transposed convs bring every block to stride 2; concatenate",
+      "short": "Up1–Up3 + concat",
+      "row": "Up1, Up2, Up3 → stride 2",
+      "shape": "384 × H/2 × W/2"
+    },
+    {
+      "say": "SSD head: anchors at 0° and 90°",
+      "short": "SSD head",
+      "row": "SSD head",
+      "shape": "class, box (7), direction"
+    },
+    {
+      "say": "Output: oriented 3D boxes — no 3D convolution anywhere",
+      "short": "Output: 3D boxes",
+      "row": "Output (after the table)",
+      "shape": "16.2 ms per frame (62 Hz)"
+    }
+  ],
+  "groups": [
+    {
+      "label": "Pillar Feature Net",
+      "col0": 0,
+      "col1": 4,
+      "row0": 0,
+      "row1": 0,
+      "steps": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "label": "Backbone (2D CNN)",
+      "col0": 0,
+      "col1": 3,
+      "row0": 1,
+      "row1": 1,
+      "steps": [
+        5,
+        6,
+        7,
+        8
+      ]
+    },
+    {
+      "label": "Detection Head (SSD)",
+      "col0": 0,
+      "col1": 1,
+      "row0": 2,
+      "row1": 2,
+      "steps": [
+        9,
+        10
+      ]
+    }
+  ]
+};
+
+  document.querySelectorAll<HTMLCanvasElement>('.pointpillars-arch-canvas').forEach((canvas) => runPipeline(canvas, SPEC));
+</script>

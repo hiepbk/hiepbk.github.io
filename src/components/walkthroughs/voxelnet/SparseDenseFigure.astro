@@ -1,0 +1,268 @@
+---
+// RPNs need dense tensors, but a scan is a sparse, unordered set. Real scan, VoxelNet's 0.2 × 0.2 × 0.4 m voxels.
+// Beat 1: the points as an unordered list of rows (a 16 × 12 m window shown from above). Beat 2: voxelized — one
+// horizontal slice of the 3D grid (0.6–1.0 m above the road) is shown; the share of non-empty voxels over ±40 m × 4 m
+// is computed from the scan. Beat 3: convolutions need the dense grid, zeros included: the share of 3 × 3 × 3 kernel
+// positions that see only empty voxels is computed over the whole volume, and a 3 × 3 kernel sweeps the slice.
+import { loadScene, rng, cm } from '../../../lib/walkthroughFiguresA';
+
+const R = 40, VX = 0.2, VZ = 0.4, Z0 = -1, Z1 = 3;
+const { points } = loadScene();
+const pts = points.filter((p) => Math.abs(p.x) < R && Math.abs(p.y) < R && p.z >= Z0 && p.z < Z1);
+const NV = (2 * R) / VX, NZ = (Z1 - Z0) / VZ;
+const occupied = new Set<number>();
+for (const p of pts) occupied.add((Math.floor((p.x + R) / VX) * NV + Math.floor((p.y + R) / VX)) * NZ + Math.floor((p.z - Z0) / VZ));
+const total = NV * NV * NZ;
+// 3 × 3 × 3 kernel positions (stride 1, zero padding) that touch at least one non-empty voxel
+const touched = new Set<number>();
+for (const key of occupied) {
+  const iz = key % NZ, ixy = (key - iz) / NZ, iy = ixy % NV, ix = (ixy - iy) / NV;
+  for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (let c = -1; c <= 1; c++) {
+    const x = ix + a, y = iy + b, z = iz + c;
+    if (x >= 0 && y >= 0 && z >= 0 && x < NV && y < NV && z < NZ) touched.add((x * NV + y) * NZ + z);
+  }
+}
+const kernelZeroPct = Math.round((1000 * (total - touched.size)) / total) / 10;
+const SZ0 = 0.6, SZ1 = 1.0; // the slice shown
+// Window around the parked cars (x forward, y left), BEV columns of 0.2 m
+const WX0 = -2, WX1 = 14, WY0 = 1, WY1 = 13;
+const nx = Math.round((WX1 - WX0) / VX), ny = Math.round((WY1 - WY0) / VX);
+const occ = new Array(nx * ny).fill(0);
+const win = pts.filter((p) => p.x >= WX0 && p.x < WX1 && p.y >= WY0 && p.y < WY1);
+for (const p of win) if (p.z >= SZ0 && p.z < SZ1) occ[Math.floor((p.x - WX0) / VX) * ny + Math.floor((p.y - WY0) / VX)] = 1;
+// A few real points for the unordered list, in shuffled order
+const rand = rng(3);
+const list = win.map((p) => [cm(p.x), cm(p.y), cm(p.z)]).sort(() => rand() - 0.5).slice(0, 14);
+const data = {
+  nx, ny, vx: VX, x0: WX0, y0: WY0, occ: occ.join(''),
+  win: win.filter((_, i) => i % 2 === 0).map((p) => [cm(p.x), cm(p.y)]), list,
+  nonEmpty: occupied.size, total, nPts: pts.length, kernelZeroPct, slice: [SZ0, SZ1],
+};
+---
+<canvas class="wt-canvas sparse-dense-canvas" data-sd={JSON.stringify(data)}
+  role="img" aria-label="A window of the scan from above: the points are an unordered list; once voxelized only about one voxel in a hundred holds a point; the region proposal network's convolutions need the full dense grid, so a 3 by 3 kernel spends most of its positions on empty cells"></canvas>
+
+<style>
+  canvas.wt-canvas.sparse-dense-canvas { height: 380px; }
+  @media (max-width: 600px) { canvas.wt-canvas.sparse-dense-canvas { height: 340px; } }
+</style>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  type Sd = {
+    nx: number; ny: number; vx: number; x0: number; y0: number; occ: string; win: [number, number][];
+    list: [number, number, number][]; nonEmpty: number; total: number; nPts: number; kernelZeroPct: number; slice: [number, number];
+  };
+
+  document.querySelectorAll<HTMLCanvasElement>('.sparse-dense-canvas').forEach((canvas) => {
+    const d: Sd = JSON.parse(canvas.dataset.sd!);
+    const ctx = canvas.getContext('2d')!;
+    const occ = Array.from(d.occ, Number);
+    const at = (i: number, j: number) => (i >= 0 && j >= 0 && i < d.nx && j < d.ny ? occ[i * d.ny + j] : 0);
+    const pct = (100 * d.nonEmpty) / d.total;
+    const fmt = (n: number) => n.toLocaleString('en-US');
+    // Kernel positions (row-major over the window) and how many of them see only empty cells
+    const NPOS = d.nx * d.ny;
+    const allZero = new Array(NPOS).fill(0);
+    for (let i = 0; i < d.nx; i++) for (let j = 0; j < d.ny; j++) {
+      let s = 0;
+      for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) s += at(i + a, j + b);
+      allZero[i * d.ny + j] = s === 0 ? 1 : 0;
+    }
+    const zeroCum = allZero.reduce((acc: number[], v) => (acc.push((acc.at(-1) ?? 0) + v), acc), []);
+
+    const HEADLINE = [
+      'A LiDAR scan is a sparse, unordered set of points',
+      `Voxelized: only ${pct.toFixed(1)} % of the voxels hold any point`,
+      `Convolving the dense grid: ${d.kernelZeroPct} % of 3 × 3 × 3 kernel positions see only zeros`,
+    ];
+    const HEADLINE_SHORT = ['A scan: unordered points', `Only ${pct.toFixed(1)} % of voxels non-empty`, `${d.kernelZeroPct} % of kernel steps on zeros`];
+
+    const T = { set: 0, vox: 5.5, conv: 11.5, end: 21 };
+    const BEATS = [T.set, T.vox, T.conv];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.vox ? 0 : t < T.conv ? 1 : 2;
+      const narrow = W < 520;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const vox = ease(ramp(t, T.vox + 0.3, T.vox + 1.8));
+      const dense = ease(ramp(t, T.conv + 0.2, T.conv + 1.2));
+      const sweep = ramp(t, T.conv + 1.2, T.end - 1.2);  // fraction of kernel positions visited
+
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+
+      // Window on the left (x forward = up), side panel on the right
+      const top = 80, side = narrow ? 6 : 20;
+      const panelW = narrow ? Math.max(118, W * 0.36) : 230;
+      const availW = W - 2 * side - panelW - (narrow ? 10 : 36), availH = H - top - 10;
+      const cs = Math.min(availW / d.ny, availH / d.nx);
+      const gw = cs * d.ny, gh = cs * d.nx, gx = side, gy = top;
+      const cellXY = (i: number, j: number) => [gx + gw - (j + 1) * cs, gy + gh - (i + 1) * cs] as const;
+
+      ctx.globalAlpha = fadeAll;
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(beat === 0 ? 'Points (from above)' : beat === 1 ? 'Voxel grid' : 'Dense tensor for the RPN', gx + gw / 2, 46, gw + 20);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(beat === 0 ? `${(d.nx * d.vx).toFixed(0)} × ${(d.ny * d.vx).toFixed(0)} m window` : beat === 1 ? `slice at ${d.slice[0]}–${d.slice[1]} m height` : 'empty cells stored as zeros', gx + gw / 2, 64, gw + 20);
+
+      // Dense zeros under everything in the last beat
+      if (dense > 0.01) {
+        ctx.globalAlpha = fadeAll * dense;
+        ctx.fillStyle = dark ? 'rgba(148,163,184,0.16)' : 'rgba(30,58,138,0.07)';
+        ctx.fillRect(gx, gy, gw, gh);
+        if (cs >= 7) {
+          ctx.fillStyle = faint; ctx.textAlign = 'center';
+          ctx.font = `500 ${Math.min(9, cs * 0.8)}px "IBM Plex Mono", monospace`;
+          for (let i = 0; i < d.nx; i += 2) for (let j = 0; j < d.ny; j += 2) {
+            if (at(i, j)) continue;
+            const [x, y] = cellXY(i, j);
+            ctx.fillText('0', x + cs / 2, y + cs * 0.8);
+          }
+        }
+      }
+      // Grid lines
+      if (vox > 0.01) {
+        ctx.globalAlpha = fadeAll * vox * 0.35;
+        ctx.strokeStyle = faint; ctx.lineWidth = 0.4;
+        ctx.beginPath();
+        for (let i = 0; i <= d.nx; i++) { ctx.moveTo(gx, gy + i * cs); ctx.lineTo(gx + gw, gy + i * cs); }
+        for (let j = 0; j <= d.ny; j++) { ctx.moveTo(gx + j * cs, gy); ctx.lineTo(gx + j * cs, gy + gh); }
+        ctx.stroke();
+      }
+      ctx.globalAlpha = fadeAll * 0.5;
+      ctx.strokeStyle = heading; ctx.lineWidth = 1; ctx.strokeRect(gx, gy, gw, gh);
+      // Occupied cells
+      if (vox > 0.01) {
+        ctx.globalAlpha = fadeAll * vox;
+        ctx.fillStyle = accent;
+        for (let i = 0; i < d.nx; i++) for (let j = 0; j < d.ny; j++) {
+          if (!at(i, j)) continue;
+          const [x, y] = cellXY(i, j);
+          ctx.fillRect(x + 0.3, y + 0.3, cs - 0.6, cs - 0.6);
+        }
+      }
+      // Points, fading as they snap into voxels
+      ctx.globalAlpha = fadeAll * (1 - vox);
+      ctx.fillStyle = dark ? '#8fb3ff' : '#1e3a8a';
+      for (const [x, y] of d.win) {
+        const px = gx + gw - ((y - d.y0) / d.vx) * cs, py = gy + gh - ((x - d.x0) / d.vx) * cs;
+        ctx.fillRect(px - 0.8, py - 0.8, 1.6, 1.6);
+      }
+      // Kernel sweep (row-major from the near edge), visited all-zero positions tinted red
+      if (sweep > 0) {
+        const done = Math.floor(sweep * NPOS);
+        ctx.globalAlpha = fadeAll * 0.35;
+        ctx.fillStyle = red;
+        for (let p = 0; p < done; p++) {
+          if (!allZero[p]) continue;
+          const [x, y] = cellXY(Math.floor(p / d.ny), p % d.ny);
+          ctx.fillRect(x, y, cs, cs);
+        }
+        if (done < NPOS) {
+          const i = Math.floor(done / d.ny), j = done % d.ny;
+          const [x, y] = cellXY(i + 1, j + 1);
+          ctx.globalAlpha = fadeAll;
+          ctx.strokeStyle = red; ctx.lineWidth = 2;
+          ctx.strokeRect(x, y, 3 * cs, 3 * cs);
+        }
+      }
+
+      // Side panel
+      const px = W - side - panelW;
+      ctx.globalAlpha = fadeAll;
+      ctx.textAlign = 'left';
+      if (beat === 0) {
+        ctx.font = `600 ${narrow ? 11 : 13}px Sora, sans-serif`;
+        ctx.fillStyle = heading;
+        ctx.fillText(narrow ? 'Rows: x, y, z' : 'Rows (any order): x, y, z', px, top + 4);
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+        const rowH = narrow ? 14 : 17;
+        const shown = Math.min(d.list.length, Math.floor((H - top - 40) / rowH));
+        for (let k = 0; k < shown; k++) {
+          ctx.globalAlpha = fadeAll * ease(ramp(t, 0.4 + k * 0.18, 0.8 + k * 0.18));
+          ctx.fillStyle = text;
+          ctx.fillText(d.list[k].map((v) => v.toFixed(2).padStart(6)).join(narrow ? ' ' : '  '), px, top + 26 + k * rowH);
+        }
+        ctx.globalAlpha = fadeAll;
+        ctx.fillStyle = accent;
+        ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+        ctx.fillText(`… ${fmt(d.nPts)} rows, no grid`, px, top + 26 + shown * rowH + 6);
+      } else {
+        // Share of non-empty voxels over the whole ±40 m × 4 m volume
+        const bw = panelW, by = top + 10;
+        ctx.font = `600 ${narrow ? 11 : 13}px Sora, sans-serif`;
+        ctx.fillStyle = heading;
+        ctx.fillText(narrow ? 'Whole scan' : 'Whole scan, ±40 m × 4 m', px, by);
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = text;
+        ctx.fillText(`${fmt(d.total)} voxels`, px, by + 22);
+        ctx.fillStyle = dark ? 'rgba(148,163,184,0.2)' : 'rgba(30,58,138,0.1)';
+        ctx.fillRect(px, by + 32, bw, 14);
+        ctx.fillStyle = accent;
+        ctx.fillRect(px, by + 32, Math.max(2, (bw * pct) / 100) * vox, 14);
+        ctx.fillStyle = accent;
+        ctx.fillText(`${fmt(d.nonEmpty)} non-empty (${pct.toFixed(1)} %)`, px, by + 64, bw);
+        ctx.fillStyle = red;
+        ctx.fillText(`${(100 - pct).toFixed(1)} % empty`, px, by + 82, bw);
+        if (beat === 2) {
+          ctx.fillStyle = red;
+          ctx.fillText(`3 × 3 × 3 kernel: ${d.kernelZeroPct} % on zeros`, px, by + 100, bw);
+          const done = Math.floor(sweep * NPOS);
+          const z = done ? zeroCum[Math.min(NPOS, done) - 1] : 0;
+          const cy = by + 140;
+          ctx.font = `600 ${narrow ? 11 : 13}px Sora, sans-serif`;
+          ctx.fillStyle = heading;
+          ctx.fillText(narrow ? '3 × 3 kernel, slice' : '3 × 3 kernel, this slice', px, cy);
+          ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+          ctx.fillStyle = text;
+          ctx.fillText(`positions: ${fmt(done)}`, px, cy + 22);
+          ctx.fillStyle = red;
+          ctx.fillText(`all zeros: ${fmt(z)}${done ? ` (${Math.round((100 * z) / done)} %)` : ''}`, px, cy + 40);
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.end - 1); });
+    if (still) { frame(T.end - 1); return; }
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

@@ -1,0 +1,37 @@
+---
+// Main architecture of PointRCNN, laid out like the paper's Figure 2 (stage 1 on top, stage 2 below). One node per
+// row of the walkthrough's tensor-shape table, with the same stage names and shapes; data flows from the raw
+// points to the refined boxes, one table row at a time.
+const spec = {
+  cols: 5, rows: 2, colsN: 3, rowsN: 3,
+  nodes: [
+    { stage: 'Input', glyph: 'points', shape: '16384 points', opText: 'raw scene points, randomly sampled',
+      head: 'Input: 16,384 raw points sampled from the scan', headN: 'Input: 16,384 raw points', pos: [0, 0], posN: [0, 0] },
+    { stage: 'SA 1–4 (MSG)', block: 'backbone', shape: '4096 → 1024 → 256 → 64', shapeN: '4096 → … → 64', opText: 'sample and group',
+      head: 'PointNet++ set abstraction: sample, group, shared MLP', headN: 'Set abstraction (PointNet++)', pos: [1, 0], posN: [1, 0] },
+    { stage: 'FP 1–4', block: 'mlp', shared: true, shape: '16384 × C', opText: 'interpolate back up',
+      head: 'Feature propagation: a feature for every point again', headN: 'Back up to every point', pos: [2, 0], posN: [2, 0] },
+    { stage: 'Stage-1 heads', block: 'mlp', shared: true, shape: 'score + box per point', shapeN: 'score + box / pt', opText: 'foreground mask + bin-based box',
+      head: 'Segment the points; each foreground point proposes a box', headN: 'Foreground mask + a box per point', pos: [3, 0], posN: [2, 1] },
+    { stage: 'NMS', op: 'NMS', shape: '300 / 100 proposals', shapeN: '300 / 100', opText: 'oriented BEV NMS',
+      head: 'Oriented NMS keeps the best proposals', headN: 'NMS → proposals', pos: [4, 0], posN: [1, 1] },
+    { stage: 'Region pooling', block: 'roi', shape: '512 pts / proposal', shapeN: '512 pts / box', opText: 'points in the enlarged box, random sample',
+      head: 'Stage 2: pool the points inside each enlarged box', headN: 'Pool points per proposal', pos: [4, 1], posN: [0, 1] },
+    { stage: 'Canonical transform', op: 'rotate', shape: '512 pts / proposal', shapeN: '512 pts / box', opText: 'rotate + translate into the box frame, add depth',
+      head: 'Move each proposal into its own canonical frame', headN: 'Canonical frame per proposal', pos: [3, 1], posN: [0, 2] },
+    { stage: 'Stage-2 SA (SSG)', block: 'mlp', shared: true, shape: '128 → 32 → 1', opText: 'sample and group',
+      head: 'Set abstraction encodes each proposal into one vector', headN: 'Encode each proposal', pos: [2, 1], posN: [1, 2] },
+    { stage: 'Stage-2 heads', block: 'mlp', shape: 'score + box per proposal', shapeN: 'score + box', opText: 'confidence + box refinement',
+      head: 'Confidence and bin-based refinement: the final boxes', headN: 'Confidence + refined box', pos: [1, 1], posN: [2, 2] },
+  ],
+};
+---
+<canvas class="wt-canvas arch-pointrcnn-canvas" data-arch={JSON.stringify(spec)}
+  role="img" aria-label="PointRCNN architecture, one block per row of the tensor-shape table: 16,384 input points, PointNet++ set abstraction and feature propagation, stage-1 heads for the foreground mask and one box per point, NMS, region pooling, canonical transformation, stage-2 set abstraction and stage-2 heads"></canvas>
+
+<script>
+  import { runArchFigure, type ArchSpec } from '../../../lib/archFigureB';
+  document.querySelectorAll<HTMLCanvasElement>('.arch-pointrcnn-canvas').forEach((canvas) => {
+    runArchFigure(canvas, JSON.parse(canvas.dataset.arch!) as ArchSpec);
+  });
+</script>

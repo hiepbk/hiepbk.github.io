@@ -1,0 +1,375 @@
+---
+// VoxelNet's Voxel Feature Encoding (VFE) layer, inside one real voxel (0.2 × 0.2 × 0.4 m) on a parked car.
+// Beat 1 decorates each point with its offset from the voxel centroid (7-D input). Beat 2 runs the same FCN on
+// every point (point-wise features). Beat 3 takes the element-wise max over the points (locally aggregated
+// feature). Beat 4 copies it back to every point and concatenates (t × 2m: the VFE output). Beat 5 shows the
+// stack used for cars: VFE-1(7, 32) → VFE-2(32, 128) → FCN + max → one 128-D vector per voxel.
+// The FCN here is a tiny random one (m = 4 instead of 16, fixed seed), but every number shown is computed from it.
+// The scan stores no reflectance, so r is shown as "–" (and set to 0 in the computation).
+import { loadScene, rng } from '../../../lib/walkthroughFiguresA';
+
+const VS = [0.2, 0.2, 0.4];
+const groups = new Map<string, number[][]>();
+for (const p of loadScene().points) {
+  if (p.ground || Math.abs(p.x - 7.59) > 2.5 || Math.abs(p.y - 6.45) > 1) continue; // the parked car at (7.6, 6.5)
+  const k = [p.x, p.y, p.z].map((v, i) => Math.floor(v / VS[i])).join(',');
+  if (!groups.has(k)) groups.set(k, []);
+  groups.get(k)!.push([p.x, p.y, p.z]);
+}
+// The 6-point voxel whose points spread most in height
+let key = '', pts: number[][] = [];
+for (const [k, g] of groups) {
+  if (g.length !== 6) continue;
+  const spread = Math.max(...g.map((p) => p[2])) - Math.min(...g.map((p) => p[2]));
+  if (!pts.length || spread > Math.max(...pts.map((p) => p[2])) - Math.min(...pts.map((p) => p[2]))) { key = k; pts = g; }
+}
+const origin = key.split(',').map((v, i) => Number(v) * VS[i]);
+const r2 = (v: number) => Math.round(v * 100) / 100;
+pts = pts.map((p) => p.map(r2)).sort((a, b) => b[2] - a[2]);
+const cen = [0, 1, 2].map((i) => pts.reduce((s, p) => s + p[i], 0) / pts.length);
+const input = pts.map((p) => [p[0], p[1], p[2], 0, r2(p[0] - cen[0]), r2(p[1] - cen[1]), r2(p[2] - cen[2])]);
+
+// FCN 7 → m (Linear + ReLU; BatchNorm folded into the weights). Pick the first seed whose column maxima come
+// from at least 3 different points, with a clear margin.
+const M = 4;
+let feats: number[][] = [];
+for (let seed = 1; seed < 20000; seed++) {
+  const rand = rng(seed);
+  const Wt = Array.from({ length: M }, () => Array.from({ length: 7 }, (_, k) => (rand() * 2 - 1) * (k < 3 ? 0.4 : k === 3 ? 0 : 12)));
+  const b = Array.from({ length: M }, (_, j) => -Wt[j].slice(0, 3).reduce((s, w, k) => s + w * cen[k], 0) + rand() * 0.8);
+  const f = input.map((p) => Wt.map((w, j) => r2(Math.max(0, w.reduce((s, wk, k) => s + wk * p[k], 0) + b[j]))));
+  const winners = new Set<number>();
+  let ok = true;
+  for (let j = 0; j < M; j++) {
+    const col = f.map((row) => row[j]).sort((a, c) => c - a);
+    if (col[0] - col[1] < 0.15 || col[0] > 9.9 || col[0] < 0.3) ok = false;
+    winners.add(f.findIndex((row) => row[j] === col[0]));
+  }
+  if (ok && winners.size >= 3) { feats = f; break; }
+}
+const data = { pts: input, origin: origin.map(r2), size: VS, cen: cen.map(r2), feats };
+---
+<canvas class="wt-canvas vfe-canvas" data-vfe={JSON.stringify(data)}
+  role="img" aria-label="Inside one voxel, each point is decorated with its offset from the centroid, passed through the same small network, max-pooled into one voxel feature, and that feature is copied back and concatenated to every point; two such layers and a final max give one vector per voxel"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  import { drawBlock, iconPalette } from '../../../lib/figureIcons';
+  type Vfe = { pts: number[][]; origin: number[]; size: number[]; cen: number[]; feats: number[][] };
+
+  const HEADLINE = [
+    'Decorate every point with its offset from the voxel centroid',
+    'The same FCN runs on every point: point-wise features fᵢ',
+    'Element-wise max over the points: one locally aggregated feature',
+    'Copy it back to every point and concatenate: the VFE output',
+    'Stack two VFE layers, then FCN + max: one vector per voxel',
+  ];
+  const HEADLINE_SHORT = ['Add offsets from the centroid', 'Same FCN on every point', 'Max over the points', 'Copy back + concatenate', 'Stack VFEs → one vector per voxel'];
+  const COLS = ['x', 'y', 'z', 'r', 'Δx', 'Δy', 'Δz'];
+
+  document.querySelectorAll<HTMLCanvasElement>('.vfe-canvas').forEach((canvas) => {
+    const d: Vfe = JSON.parse(canvas.dataset.vfe!);
+    const ctx = canvas.getContext('2d')!;
+    const t_ = d.pts.length, M = d.feats[0].length;
+    const hue = (i: number) => (200 + i * 61) % 360;
+    const winner = Array.from({ length: M }, (_, j) => d.feats.reduce((b, row, i) => (row[j] > d.feats[b][j] ? i : b), 0));
+    const maxVec = winner.map((i, j) => d.feats[i][j]);
+    const colMax = maxVec.map((v) => v || 1);
+
+    // Beats: decorate · FCN · max · copy back + concat · the stack
+    const T = { dec: 0, fcn: 6.5, max: 12.5, cat: 18.5, stack: 25, end: 32 };
+    const BEATS = [T.dec, T.fcn, T.max, T.cat, T.stack];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const cellBg = dark ? '#232b3a' : '#eef1f6';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.fcn ? 0 : t < T.max ? 1 : t < T.cat ? 2 : t < T.stack ? 3 : 4;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const narrow = W < 520;
+
+      // Headline
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+
+      // Layout: voxel (wide only) · input matrix · FCN column · feature matrix (m point-wise + m copied)
+      const vW = narrow ? 0 : 120;
+      const inC = narrow ? 21 : 36, hW = narrow ? 24 : 48, fC = narrow ? 18 : 30;
+      const inW = 7 * inC, fW = 2 * M * fC;
+      const x0 = Math.max(4, (W - (vW + inW + hW + fW)) / 2);
+      const ix = x0 + vW, hx = ix + inW, fx = hx + hW;
+      const top = narrow ? 96 : 108, rowH = narrow ? 20 : 27;
+      const vecY = top + t_ * rowH + (narrow ? 10 : 14);
+      const leftCx = narrow ? ix + inW / 2 : x0 + (vW + inW) / 2, rightCx = fx + fW / 2;
+      const stackA = beat === 4 ? ease(ramp(t, T.stack + 0.2, T.stack + 0.9)) : 0;
+      const mainA = fadeAll * (1 - stackA);
+
+      // Titles and status lines
+      ctx.globalAlpha = mainA;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(narrow ? `Points p̂ᵢ: ${t_} × 7` : `One voxel: t = ${t_} points, p̂ᵢ ∈ ℝ⁷`, leftCx, 46, vW + inW);
+      ctx.fillText(beat < 3 ? (narrow ? `fᵢ: ${t_} × m` : `Point-wise features fᵢ: ${t_} × m`) : (narrow ? `[fᵢ ; f̃]: ${t_} × 2m` : `VFE output [fᵢ ; f̃]: ${t_} × 2m`), rightCx - (narrow ? 0 : fW / 4), 46, fW + hW);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 && t < 1.5 ? text : accent;
+      ctx.fillText(narrow ? 'x y z r + offsets (cm)' : '(x, y, z, r) + offset from the centroid', leftCx, 64, vW + inW);
+      ctx.fillStyle = beat === 0 ? text : accent;
+      const rNote = beat === 0 ? (narrow ? 'not computed yet' : 'not computed yet') : beat === 1 ? (narrow ? 'FCN: Linear + BN + ReLU' : 'FCN = Linear + BN + ReLU, shared') : beat === 2 ? (narrow ? 'max over each column' : 'f̃ = max over each column') : narrow ? 'f̃ copied to every row' : 'f̃ copied to every row, then concatenated';
+      ctx.fillText(rNote, rightCx - (narrow ? 0 : fW / 4), 64, fW + hW);
+
+      // Column headers
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+      COLS.forEach((c, k) => {
+        ctx.fillStyle = k >= 4 ? accent : faint;
+        ctx.globalAlpha = mainA * (k >= 4 ? ease(ramp(t, 1.8, 2.4)) : 1);
+        ctx.fillText(c, ix + inC * (k + 0.5), top - 7);
+      });
+      ctx.globalAlpha = mainA * ease(ramp(t, T.fcn + 0.6, T.fcn + 1.0));
+      ctx.fillStyle = faint;
+      for (let j = 0; j < M; j++) ctx.fillText(`f${j + 1}`, fx + fC * (j + 0.5), top - 7);
+      ctx.globalAlpha = mainA * ease(ramp(t, T.cat + 0.3, T.cat + 0.8));
+      for (let j = 0; j < M; j++) ctx.fillText(`f̃${j + 1}`, fx + fC * (M + j + 0.5), top - 7);
+
+      const cell = (x: number, y: number, w: number, h: number, fill: string) => { ctx.fillStyle = fill; ctx.fillRect(x, y, w, h); };
+      const fmt = (v: number, k: number) => (k === 3 ? '–' : narrow ? (k >= 4 ? (v * 100).toFixed(0) : v.toFixed(1)) : v.toFixed(2));
+      ctx.textBaseline = 'middle';
+
+      // Voxel side view (x horizontal, z vertical), wide layout only
+      if (!narrow) {
+        const vs = Math.min((vW - 24) / d.size[0], (t_ * rowH) / d.size[2]);
+        const bw = d.size[0] * vs, bh = d.size[2] * vs;
+        const bx = x0 + (vW - 16 - bw) / 2, by = top + (t_ * rowH - bh) / 2;
+        const P = (x: number, z: number) => [bx + (x - d.origin[0]) * vs, by + bh - (z - d.origin[2]) * vs] as const;
+        ctx.globalAlpha = mainA;
+        ctx.strokeStyle = faint;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(bx, by, bw, bh);
+        ctx.font = `500 10px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = faint;
+        ctx.fillText('0.2 m', bx + bw / 2, by + bh + 10);
+        ctx.save();
+        ctx.translate(bx - 9, by + bh / 2); ctx.rotate(-Math.PI / 2); ctx.fillText('0.4 m', 0, 0);
+        ctx.restore();
+        const [cx, cz] = P(d.cen[0], d.cen[2]);
+        const off = ease(ramp(t, 1.2, 2.2));
+        d.pts.forEach((p, i) => {
+          const [x, y] = P(p[0], p[2]);
+          ctx.globalAlpha = mainA * ease(ramp(t, 0.1 + i * 0.1, 0.5 + i * 0.1));
+          ctx.fillStyle = `hsl(${hue(i)} 70% 52%)`;
+          ctx.beginPath(); ctx.arc(x, y, 3.5, 0, 2 * Math.PI); ctx.fill();
+          if (off > 0) {
+            ctx.globalAlpha = mainA * off * 0.8;
+            ctx.strokeStyle = `hsl(${hue(i)} 70% 52%)`;
+            ctx.beginPath(); ctx.moveTo(cx, cz); ctx.lineTo(cx + (x - cx) * off, cz + (y - cz) * off); ctx.stroke();
+          }
+        });
+        if (off > 0) {
+          ctx.globalAlpha = mainA * off;
+          ctx.strokeStyle = heading;
+          ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(cx - 5, cz - 5); ctx.lineTo(cx + 5, cz + 5); ctx.moveTo(cx + 5, cz - 5); ctx.lineTo(cx - 5, cz + 5); ctx.stroke();
+          ctx.fillStyle = heading;
+          ctx.font = `500 10px "IBM Plex Sans", sans-serif`;
+          ctx.fillText('centroid', cx, by - 8);
+        }
+      }
+
+      // Input matrix (offset columns fill in during beat 1)
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+      for (let i = 0; i < t_; i++) {
+        const y = top + i * rowH;
+        const rowA = mainA * ease(ramp(t, 0.1 + i * 0.1, 0.5 + i * 0.1));
+        // FCN lights each row in turn during beat 2
+        const lit = beat === 1 ? ramp(t, T.fcn + 0.8 + i * 0.5, T.fcn + 1.0 + i * 0.5) * (1 - ramp(t, T.fcn + 1.3 + i * 0.5, T.fcn + 1.6 + i * 0.5)) : 0;
+        for (let k = 0; k < 7; k++) {
+          const a = rowA * (k >= 4 ? ease(ramp(t, 2.2 + i * 0.12, 2.6 + i * 0.12)) : 1);
+          if (a <= 0) continue;
+          ctx.globalAlpha = a;
+          cell(ix + inC * k, y + 1, inC - 2, rowH - 2, lit > 0 ? (dark ? '#3b3361' : '#e4dcfb') : cellBg);
+          ctx.fillStyle = k >= 4 ? accent : k === 3 ? faint : text;
+          ctx.fillText(fmt(d.pts[i][k], k), ix + inC * (k + 0.5) - 1, y + rowH / 2 + 0.5, inC - 3);
+        }
+        ctx.globalAlpha = rowA;
+        cell(ix - 6, y + 1, 4, rowH - 2, `hsl(${hue(i)} 70% 52%)`);
+      }
+      // FCN: one shared MLP block (the same weights for every point), an arrow per row in and out
+      const pal = iconPalette();
+      const bw = hW - (narrow ? 6 : 12), bx = hx + (hW - bw) / 2;
+      for (let i = 0; i < t_; i++) {
+        const y = top + i * rowH + rowH / 2;
+        ctx.globalAlpha = mainA * (beat === 0 ? 0.35 : 1);
+        ctx.strokeStyle = faint;
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(hx + 1, y); ctx.lineTo(bx, y); ctx.moveTo(bx + bw, y); ctx.lineTo(fx - 3, y); ctx.stroke();
+      }
+      const fcnLit = beat === 1 ? ramp(t, T.fcn + 0.6, T.fcn + 1.0) * (1 - ramp(t, T.fcn + 4.2, T.fcn + 4.8)) : 0;
+      ctx.globalAlpha = 1;
+      drawBlock(ctx, 'mlp', bx, top + 4, bw, t_ * rowH - 8, pal, { shared: true, active: fcnLit, alpha: mainA * (beat === 0 ? 0.4 : 1), compact: narrow });
+      ctx.globalAlpha = mainA;
+      ctx.fillStyle = accent;
+      ctx.font = `600 ${narrow ? 8 : 10}px "IBM Plex Sans", sans-serif`;
+      ctx.fillText('FCN', hx + hW / 2, top + t_ * rowH + (narrow ? 4 : 6));
+      // Max pool (beat 3) and concatenation (beat 4) blocks, left of the f̃ row and above the copied half
+      if (beat >= 2) {
+        const mw = narrow ? 22 : 30, mh = rowH + 4;
+        ctx.globalAlpha = 1;
+        drawBlock(ctx, 'maxpool', fx - mw - (narrow ? 10 : 14), vecY - 2, mw, mh, pal, { active: beat === 2 ? ramp(t, T.max + 0.3, T.max + 0.7) : 0, alpha: mainA });
+      }
+      if (beat === 3) {
+        const cw2 = narrow ? 22 : 30, ch2 = narrow ? 16 : 20;
+        ctx.globalAlpha = 1;
+        drawBlock(ctx, 'concat', narrow ? fx + M * fC + 4 : fx + M * fC - cw2 / 2 - 1, narrow ? vecY + 2 : top - 40, cw2, ch2, pal, { active: ramp(t, T.cat + 0.3, T.cat + 0.7), alpha: mainA });
+      }
+
+      // Point-wise features and (beat 4) the copied f̃
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+      for (let i = 0; i < t_; i++) {
+        const y = top + i * rowH;
+        const rowA = mainA * ease(ramp(t, T.fcn + 1.1 + i * 0.5, T.fcn + 1.4 + i * 0.5));
+        for (let j = 0; j < M; j++) {
+          if (rowA <= 0) continue;
+          ctx.globalAlpha = rowA;
+          const f = d.feats[i][j] / colMax[j];
+          cell(fx + fC * j, y + 1, fC - 2, rowH - 2, dark ? `hsl(222 40% ${18 + f * 30}%)` : `hsl(222 55% ${95 - f * 30}%)`);
+          ctx.fillStyle = text;
+          ctx.fillText(d.feats[i][j].toFixed(narrow ? 1 : 2), fx + fC * (j + 0.5) - 1, y + rowH / 2 + 0.5, fC - 3);
+        }
+        // Copied max vector: flies from the f̃ row up into every row, right half
+        const copy = beat >= 3 ? ease(ramp(t, T.cat + 0.6 + i * 0.3, T.cat + 1.4 + i * 0.3)) : 0;
+        if (copy > 0) {
+          for (let j = 0; j < M; j++) {
+            const tx = fx + fC * (M + j), fromX = fx + fC * j;
+            const x = fromX + (tx - fromX) * copy, yy = vecY + (y - vecY) * copy;
+            ctx.globalAlpha = mainA;
+            cell(x, yy + 1, fC - 2, rowH - 2, `hsla(${hue(winner[j])} 70% 52% / ${dark ? 0.35 : 0.25})`);
+            ctx.fillStyle = heading;
+            ctx.fillText(maxVec[j].toFixed(narrow ? 1 : 2), x + fC / 2 - 1, yy + rowH / 2 + 0.5, fC - 3);
+          }
+        }
+      }
+      // Max over each column: winning cell outlined in its point's colour, value drops into f̃
+      if (beat >= 2) {
+        for (let j = 0; j < M; j++) {
+          const i = winner[j];
+          const show = ramp(t, T.max + 0.6 + j * 0.5, T.max + 0.9 + j * 0.5);
+          if (show <= 0) continue;
+          ctx.globalAlpha = mainA * show;
+          ctx.strokeStyle = `hsl(${hue(i)} 70% 52%)`;
+          ctx.lineWidth = 2;
+          ctx.strokeRect(fx + fC * j, top + i * rowH + 1, fC - 2, rowH - 2);
+          cell(fx + fC * j, vecY + 1, fC - 2, rowH - 2, `hsla(${hue(i)} 70% 52% / ${dark ? 0.35 : 0.25})`);
+          ctx.strokeRect(fx + fC * j, vecY + 1, fC - 2, rowH - 2);
+          ctx.fillStyle = heading;
+          ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+          ctx.fillText(maxVec[j].toFixed(narrow ? 1 : 2), fx + fC * (j + 0.5) - 1, vecY + rowH / 2 + 0.5, fC - 3);
+        }
+        ctx.globalAlpha = mainA * ramp(t, T.max + 0.4, T.max + 0.8);
+        ctx.fillStyle = accent;
+        ctx.font = `600 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+        ctx.textAlign = 'right';
+        ctx.fillText('f̃', fx - 2, vecY + rowH / 2);
+        ctx.textAlign = 'center';
+      }
+      // Beat 4: bracket under the two halves
+      if (beat === 3) {
+        const a = mainA * ramp(t, T.cat + 2.8, T.cat + 3.3);
+        ctx.globalAlpha = a;
+        ctx.fillStyle = faint;
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.fillText(narrow ? 'own' : 'own feature', fx + (M * fC) / 2, vecY + rowH + 14);
+        ctx.fillText(narrow ? 'voxel' : 'voxel summary', fx + (3 * M * fC) / 2, vecY + rowH + 14);
+      }
+      ctx.textBaseline = 'alphabetic';
+
+      // Beat 5: the stacked encoder for cars
+      if (stackA > 0) {
+        const STAGES = [
+          { shape: '35 × 7', label: 'p̂' },
+          { shape: '35 × 32', label: 'VFE-1(7, 32)' },
+          { shape: '35 × 128', label: 'VFE-2(32, 128)' },
+          { shape: '128', label: 'FCN + max' },
+        ];
+        const n = STAGES.length, gap = narrow ? 14 : 30;
+        const bw = (W - 16 - gap * (n - 1)) / n, y0 = narrow ? 120 : 140;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        let prevRight = 0;
+        STAGES.forEach((s, k) => {
+          const a = fadeAll * stackA * ease(ramp(t, T.stack + 0.6 + k * 0.9, T.stack + 1.1 + k * 0.9));
+          const x = 8 + k * (bw + gap);
+          // Tensor block: height ∝ rows (35 points vs one vector), width ∝ log(channels)
+          const rows = k === 3 ? 1 : 35, ch = [7, 32, 128, 128][k];
+          const bh = rows === 1 ? 10 : narrow ? 70 : 100, bwi = Math.min(bw - 8, (Math.log2(ch) / 7) * (bw - 8));
+          ctx.globalAlpha = a;
+          ctx.fillStyle = k === 3 ? accent : dark ? '#2e3850' : '#e4e0f7';
+          ctx.fillRect(x + (bw - bwi) / 2, y0 + 50 - bh / 2, bwi, bh);
+          ctx.strokeStyle = accent;
+          ctx.lineWidth = 1;
+          ctx.strokeRect(x + (bw - bwi) / 2, y0 + 50 - bh / 2, bwi, bh);
+          ctx.fillStyle = heading;
+          ctx.font = `600 ${narrow ? 10 : 13}px Sora, sans-serif`;
+          ctx.fillText(s.label, x + bw / 2, y0 - 16, bw + gap - 4);
+          ctx.fillStyle = text;
+          ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Mono", monospace`;
+          ctx.fillText(s.shape, x + bw / 2, y0 + 50 + (narrow ? 50 : 66));
+          const left = x + (bw - bwi) / 2 - 4;
+          if (k > 0) {
+            ctx.strokeStyle = faint;
+            ctx.beginPath(); ctx.moveTo(prevRight + 4, y0 + 50); ctx.lineTo(left, y0 + 50); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(left - 4, y0 + 46); ctx.lineTo(left, y0 + 50); ctx.lineTo(left - 4, y0 + 54); ctx.stroke();
+            // The layer itself, on the arrow: VFE = shared FCN + max + concat; the last one = FCN + max
+            const span = left - prevRight - 10, kinds = k < 3 ? (['mlp', 'maxpool', 'concat'] as const) : (['mlp', 'maxpool'] as const);
+            const ib = Math.min(narrow ? 16 : 26, (span - 2 * (kinds.length - 1)) / kinds.length), ih = narrow ? 20 : 30;
+            const bx0 = (prevRight + left) / 2 - (kinds.length * ib + 2 * (kinds.length - 1)) / 2;
+            kinds.forEach((kd, q) => drawBlock(ctx, kd, bx0 + q * (ib + 2), y0 + 50 - ih / 2, ib, ih, pal, { shared: kd === 'mlp', alpha: a }));
+            ctx.globalAlpha = a;
+          }
+          prevRight = x + (bw + bwi) / 2;
+        });
+        ctx.globalAlpha = fadeAll * stackA * ramp(t, T.stack + 4.4, T.stack + 4.9);
+        ctx.fillStyle = accent;
+        ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+        ctx.fillText(narrow ? 'per non-empty voxel; empty slots padded with 0' : 'per non-empty voxel (T = 35 point slots, empty slots kept at 0) → scattered into the sparse 4D tensor', W / 2, H - 22, W - 8);
+        ctx.textBaseline = 'alphabetic';
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.stack - 1); });
+    if (still) { frame(T.stack - 1); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

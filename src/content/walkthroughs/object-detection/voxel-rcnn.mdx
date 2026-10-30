@@ -1,0 +1,252 @@
+---
+title: "Voxel R-CNN: refinement from voxels alone"
+category: object-detection
+order: 9
+summary: "Do we really need raw points to refine a box? Voxel R-CNN pools RoI features straight from the sparse 3D voxel volumes, with a voxel query in place of the ball query — PV-RCNN accuracy at about three times the speed."
+date: 2026-10-30
+draft: true
+paper:
+  title: "Voxel R-CNN: Towards High Performance Voxel-based 3D Object Detection"
+  authors: "Jiajun Deng, Shaoshuai Shi, Peiwei Li, Wengang Zhou, Yanyong Zhang, Houqiang Li"
+  venue: AAAI 2021
+  links:
+    - name: arXiv
+      url: https://arxiv.org/abs/2012.15712
+    - name: Code
+      url: https://github.com/djiajunustc/Voxel-R-CNN
+---
+
+import Figure from '../../../components/walkthroughs/Figure.astro';
+import VoxelRcnnArchFigure from '../../../components/walkthroughs/voxel-rcnn/VoxelRcnnArchFigure.astro';
+import VoxelRoiPoolingFigure from '../../../components/walkthroughs/voxel-rcnn/VoxelRoiPoolingFigure.astro';
+import AcceleratedPointNetFigure from '../../../components/walkthroughs/voxel-rcnn/AcceleratedPointNetFigure.astro';
+
+## Motivation & Main Contribution
+
+- By 2020 the leaderboards were led by point-based or point–voxel detectors (PointRCNN, STD, 3DSSD, **PV-RCNN**),
+  and the common belief was: **precise raw-point positions are needed for accurate boxes**.
+- Voxel R-CNN tests that belief and rejects it: **coarse voxels are enough**, if the second stage reads the
+  **3D** voxel features instead of only the BEV map.
+- Design: SECOND-style 3D sparse backbone → 2D BEV backbone + RPN → **voxel RoI pooling** → detect head.
+  No keypoints, no raw points in the second stage.
+- **Main contributions:**
+  1. **Voxel RoI pooling** — RoI-grid features pooled directly from sparse 3D voxel volumes.
+  2. **Voxel query** — neighbour search by voxel indices instead of PointNet++ ball query.
+  3. **Accelerated PointNet module** — split the first FC layer to cut the cost of local aggregation.
+- Result: PV-RCNN-level accuracy on KITTI at **25.2 FPS** vs. 8.9 FPS for PV-RCNN.
+
+## Challenges at the Time
+
+- The paper's own diagnosis compares **SECOND** and **PV-RCNN** on KITTI val (car, moderate, R11):
+  - SECOND: **78.62** AP. Adding a BEV detect head (rotated RoI Align on the BEV map): only **79.26** (+0.6).
+  - PV-RCNN: **83.69**. So box refinement helps a bit, but **BEV features alone are too limited** — 3D
+    structure is what matters (Table 1).
+- **Point–voxel interaction is slow.** In PV-RCNN, VSA takes **49.4 ms** of about 99 ms per frame —
+  3D backbone 21.1 ms, 2D backbone 9.4 ms, detect head 19.1 ms (Table 2).
+- **Ball query on voxels is still expensive**: finding neighbours of a query point among $N$ voxels is $O(N)$.
+
+## Naive Questions
+
+- **If voxels lose precise positions, how can refinement work without raw points?**
+  The voxel features already encode local geometry; the experiments show that is almost sufficient.
+- **Why not RoI-pool from the BEV map, like a 2D detector?**
+  Tried in the paper: +0.6 AP only. The height structure is gone in BEV.
+- **Why not max-pool the voxels inside each sub-cell, like Fast R-CNN's RoI pooling?**
+  Fewer than 3% of voxels are non-empty; most sub-cells would be empty.
+- **What is wrong with ball query?**
+  Nothing in accuracy — it is just slow. Voxels sit on a grid, so neighbours can be looked up by index.
+- **Why the Manhattan distance?**
+  On voxel indices it is cheap to compute and enumerate: add offsets like $(\Delta i, \Delta j, \Delta k) \in \{-1, 0, 1\}^3$.
+- **Is this just PV-RCNN without keypoints?**
+  Roughly, yes — the RoI-grid idea stays, the keypoint detour goes.
+
+## Key Idea
+
+> **Key idea.** Keep the whole detector in voxels: pool each proposal's grid-point features directly from the
+> sparse 3D feature volumes, using index-based voxel queries instead of point-based ball queries.
+
+For grid point $g_i$ with its queried neighbour voxels $\{v_i^1, \dots, v_i^K\}$:
+
+$$
+\eta_i = \max_{k = 1, \dots, K} \Big\{ \Psi\big( [\, v_i^k - g_i \,;\, \phi_i^k \,] \big) \Big\}
+$$
+
+- $v_i^k - g_i$: relative position of voxel centre $k$; $\phi_i^k$: its feature; $\Psi$: an MLP;
+  $\max$: channel-wise max pool — the PointNet recipe once more, now on voxel centres.
+
+> **Builds on.** PointNet's shared MLP + max pool ([walkthrough 01](/walkthroughs/object-detection/pointnet/)).
+
+Voxel query uses the Manhattan distance on voxel indices:
+
+$$
+D_m(\alpha, \beta) = |i_\alpha - i_\beta| + |j_\alpha - j_\beta| + |k_\alpha - k_\beta|
+$$
+
+## Dive into Model Architecture & Key Components
+
+<Figure>
+  <VoxelRcnnArchFigure />
+  <span slot="caption">Voxel R-CNN from raw points to boxes, laid out like the paper's Figure 2 (KITTI settings): a SECOND-style
+  3D backbone and BEV RPN give the proposals; voxel RoI pooling reads the 3D voxel features of the last two backbone stages
+  straight from the sparse volumes — no keypoints, no raw points. One block per row of the table below; solid blocks are
+  learned layers, dashed ones fixed operations.</span>
+</Figure>
+
+### The pipeline, step by step
+
+1. **Voxelize** the scan.
+2. **3D backbone**: sparse 3D convolutions, four stages (SECOND / PV-RCNN design).
+3. **BEV**: stack the output along Z into a BEV map.
+4. **2D backbone + RPN**: two conv blocks, multi-scale fusion, two sibling $1 \times 1$ convs → anchor proposals.
+5. **Proposals**: NMS with IoU 0.7, keep top 100.
+6. **Voxel RoI pooling**: $6 \times 6 \times 6$ grid per proposal; features from the **last two** 3D stages,
+   two query distances per stage.
+7. **Detect head**: shared 2-layer MLP → box-residual branch and IoU-guided confidence branch; final NMS with IoU 0.1.
+
+> **Builds on.** SECOND's sparse 3D backbone and BEV RPN ([walkthrough 04](/walkthroughs/object-detection/second/)),
+> and PV-RCNN's RoI grid and IoU-guided scoring ([walkthrough 07](/walkthroughs/object-detection/pv-rcnn/)).
+
+### Tensor shapes (KITTI)
+
+| Stage | Operation | Shape |
+|---|---|---|
+| Input range | X $[0, 70.4]$ m, Y $[-40, 40]$ m, Z $[-3, 1]$ m | raw points |
+| Voxel grid | voxel size $(0.05, 0.05, 0.1)$ m | $1408 \times 1600 \times 40$ (range ÷ voxel size) |
+| 3D backbone | four sparse-conv stages | 16, 32, 48, 64 channels |
+| 2D backbone | stack along Z into BEV; block 1 (same X–Y resolution as 3D output), block 2 (half) | 5 conv layers each; 64, 128 channels |
+| RPN | NMS IoU 0.7 | top 100 proposals |
+| Voxel RoI pooling | grid per proposal; query distances 2 and 4 | $6 \times 6 \times 6 = 216$ grid points; 32 channels per aggregation |
+| Detect head | shared 2-layer MLP, two branches | box residual + IoU score per proposal |
+
+- Waymo: range $[-75.2, 75.2]$ m in X and Y, $[-2, 4]$ m in Z; voxel size $(0.1, 0.1, 0.15)$ m; 2D channels
+  (128, 256); aggregation output 64 channels.
+
+### Voxel query: neighbours by index
+
+- Treat the sparse volume as a set of non-empty voxel centres $\{v_i\}$ with features $\{\phi_i\}$.
+- Quantise the query point to a voxel, then reach its neighbours by **index offsets**; keep up to $K$ voxels within
+  a Manhattan-distance threshold.
+- Cost: $O(K)$ per query, vs. $O(N)$ for a ball query over $N$ non-empty voxels.
+
+<Figure>
+  <VoxelRoiPoolingFigure />
+  <span slot="caption">Voxel RoI pooling around a real car, on the $8\times$-downsampled voxels seen from above (the
+  query is drawn in 2D, as in the paper's own figure). Most of the $6 \times 6 \times 6$ sub-voxels hold no point, so each
+  grid point gathers neighbouring voxels instead: a ball query must check every non-empty voxel of the scan, the voxel
+  query only steps through index offsets within Manhattan distance 2 and 4. A shared MLP and a max pool then give the
+  grid point's feature.</span>
+</Figure>
+
+### Voxel RoI pooling
+
+- Divide each proposal into $G \times G \times G$ sub-voxels ($G = 6$); each sub-voxel centre is a grid point.
+- Because the volume is so sparse (< 3% non-empty), do not max-pool inside sub-voxels — instead, **gather
+  neighbouring voxels** around each grid point with voxel query and aggregate them with the PointNet module above.
+- Pool from the last two 3D stages, two distance thresholds each, and **concatenate** the four results as the RoI feature.
+- Compared with PV-RCNN: the same idea of grid points inside the box, but they look up **voxels**, not keypoints.
+
+### Accelerated local aggregation
+
+- With $M = r \times G^3$ grid points ($r$ RoIs) and $K$ voxels each, the first FC layer on $[\text{coords}; \text{feature}]$
+  costs $O(M \times K \times (C + 3) \times C')$.
+- Split its weight $W \in \mathbb{R}^{C' \times (C+3)}$ into $W_F \in \mathbb{R}^{C' \times C}$ (features) and
+  $W_C \in \mathbb{R}^{C' \times 3}$ (coordinates):
+  - apply $W_F$ **once per voxel**, before the query;
+  - after the query, apply only $W_C$ to the relative coordinates and add.
+- New cost: $O(N \times C \times C' + M \times K \times 3 \times C')$ — cheaper, since $M \times K$ is an order of
+  magnitude larger than $N$.
+
+<Figure>
+  <AcceleratedPointNetFigure />
+  <span slot="caption">The accelerated PointNet module, after the paper's Figure 4. Splitting the first FC layer lets its
+  feature part run once per non-empty voxel before the query; after the query only the 3 relative coordinates are
+  multiplied. The FLOP counts use $C = 64$, $C' = 32$ and $M \cdot K = 10\,N$ for illustration — the paper only states
+  that $M \cdot K$ is an order of magnitude larger than $N$.</span>
+</Figure>
+
+### Losses
+
+- **RPN** (as SECOND / PointPillars): focal loss for classification, Huber loss for box regression on foreground anchors.
+- **Detect head**: IoU-shaped confidence target
+
+$$
+l_i^*(\mathrm{IoU}_i) =
+\begin{cases}
+0 & \mathrm{IoU}_i < \theta_L \\
+\dfrac{\mathrm{IoU}_i - \theta_L}{\theta_H - \theta_L} & \theta_L \le \mathrm{IoU}_i < \theta_H \\
+1 & \mathrm{IoU}_i > \theta_H
+\end{cases}
+\qquad \theta_L = 0.25,\; \theta_H = 0.75
+$$
+
+- Binary cross-entropy on $l_i^*$; Huber loss for box residuals on proposals with IoU ≥ $\theta_{reg} = 0.55$.
+- 128 sampled RoIs per scene, half of them positive. Trained end to end with Adam, lr 0.01, cosine annealing
+  (KITTI: 80 epochs, batch 16). Implemented in OpenPCDet.
+
+## Conclusion
+
+### Results
+
+KITTI **test** set, car 3D AP with 40 recall positions, and speed (Voxel R-CNN, Table 3):
+
+| Method | Type | FPS <span class="better-up">↑</span> | Easy <span class="better-up">↑</span> | Moderate <span class="better-up">↑</span> | Hard <span class="better-up">↑</span> |
+|---|---|---|---|---|---|
+| PointRCNN | point | 10.0 | 86.96 | 75.64 | 70.70 |
+| STD | point | 12.5 | 87.95 | 79.71 | 75.09 |
+| 3DSSD | point | 26.3 | 88.36 | 79.57 | 74.55 |
+| PV-RCNN | point–voxel | 8.9 | 90.25 | 81.43 | 76.82 |
+| SECOND | voxel | 30.4 | 83.34 | 72.55 | 65.82 |
+| PointPillars | voxel | **42.4** | 82.58 | 74.31 | 68.99 |
+| SA-SSD | voxel | 25.0 | 88.75 | 79.79 | 74.16 |
+| **Voxel R-CNN** | voxel | 25.2 | **90.90** | **81.62** | **77.06** |
+
+KITTI **val** set, car 3D AP with 11 recall positions (Table 5):
+
+| Method | Easy <span class="better-up">↑</span> | Moderate <span class="better-up">↑</span> | Hard <span class="better-up">↑</span> |
+|---|---|---|---|
+| PointRCNN | 88.88 | 78.63 | 77.38 |
+| STD | 89.70 | 79.80 | 79.30 |
+| PV-RCNN | 89.35 | 83.69 | 78.70 |
+| SECOND | 88.61 | 78.62 | 77.22 |
+| SA-SSD | **90.15** | 79.91 | 78.78 |
+| **Voxel R-CNN** | 89.41 | **84.52** | **78.93** |
+
+Waymo Open Dataset (val), vehicle, LEVEL 1 3D mAP at IoU 0.7 (Table 6):
+
+| Method | Overall <span class="better-up">↑</span> | 0–30 m <span class="better-up">↑</span> | 30–50 m <span class="better-up">↑</span> | 50 m–∞ <span class="better-up">↑</span> |
+|---|---|---|---|---|
+| PointPillars | 56.62 | 81.01 | 51.75 | 27.94 |
+| MVF | 62.93 | 86.30 | 60.02 | 36.02 |
+| Pillar-OD | 69.80 | 88.53 | 66.50 | 42.93 |
+| PV-RCNN | 70.30 | 91.92 | 69.21 | 42.17 |
+| **Voxel R-CNN** | **75.59** | **92.49** | **74.09** | **53.15** |
+
+Ablation on KITTI val, car moderate 3D AP (R11) and speed (Table 7):
+
+| Configuration | Moderate AP <span class="better-up">↑</span> | FPS <span class="better-up">↑</span> |
+|---|---|---|
+| one-stage BEV baseline | 77.99 | **40.8** |
+| + detect head (ball query, original PointNet module) | 84.21 | 17.4 |
+| **full Voxel R-CNN** (voxel query + accelerated PointNet) | **84.52** | 25.2 |
+
+### Pros and Cons
+
+- **Pros**
+  - PV-RCNN-level accuracy from voxels alone, about three times faster (25.2 vs 8.9 FPS).
+  - Voxel query uses the grid: neighbours by index, $O(K)$ instead of $O(N)$.
+  - Splitting the first FC layer removes most of the per-neighbour compute.
+  - Biggest gains far away on Waymo (+10.98 mAP beyond 50 m over PV-RCNN).
+- **Cons**
+  - Still anchor-based proposals from a BEV RPN.
+  - Sparse convolutions keep a local receptive field.
+  - LiDAR only: far and small objects stay sparse.
+
+### Future Work
+
+- Wider context than local sparse convolutions — e.g. attention over sparse voxels.
+- Fusing camera images to help where LiDAR points are scarce.
+
+### Next
+
+- This closes the nine core papers. Next on the list (no walkthrough yet): transformers on sparse voxels
+  (**SST**, **DSVT**) and LiDAR–camera fusion (**BEVFusion**).

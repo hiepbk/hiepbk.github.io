@@ -1,0 +1,13 @@
+---
+// A numbered figure in a walkthrough. The illustration goes in the default slot; the caption is article
+// text written in the MDX file (Markdown and math allowed) and passed in the "caption" slot:
+//   <Figure>
+//     <SomeIllustration />
+//     <span slot="caption">What the reader should see, with $math$ if needed.</span>
+//   </Figure>
+// Numbers ("Figure 1.", "Figure 2.", …) come from a CSS counter on the article body.
+---
+<figure class="wt-figure">
+  <slot />
+  <figcaption class="wt-caption"><slot name="caption" /></figcaption>
+</figure>

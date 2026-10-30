@@ -1,0 +1,214 @@
+---
+// "Canonical transformation" with three real cars of the scan, top view. Each car (points + box) is rotated
+// about the sensor, which keeps the side the LiDAR sees consistent, so the three proposals sit at different
+// headings. Beat 1: proposals in the LiDAR frame, enlarged by η. Beat 2: each one is translated to its centre
+// and rotated by −θ. Beat 3: in the canonical frame all of them point along X'. Beat 4: the distance to the
+// sensor, lost by the transformation, is added back as a feature.
+import { cropScene, loadScene, bevBox } from '../../../lib/walkthroughFiguresB';
+
+const r2 = (v: number) => Math.round(v * 100) / 100;
+const boxes = loadScene().boxes;
+// [box index, rotation about the sensor]
+const PICK: [number, number][] = [[2, 0.95], [4, -0.35], [0, -0.75]];
+const cars = PICK.map(([i, phi]) => {
+  const b = bevBox(boxes[i]);
+  const c = Math.cos(b.h), s = Math.sin(b.h);
+  // Points in the box frame (u along the heading, v across); every 4th point keeps the page light
+  const pts = cropScene(b.x - 4, b.x + 4, b.y - 4, b.y + 4, 100000, { ground: false })
+    .filter((p, k) => p[4] === i && k % 4 === 0)
+    .map((p) => { const dx = p[0] - b.x, dy = p[1] - b.y; return [r2(dx * c + dy * s), r2(-dx * s + dy * c)]; });
+  const cp = Math.cos(phi), sp = Math.sin(phi);
+  return { x: r2(b.x * cp - b.y * sp), y: r2(b.x * sp + b.y * cp), h: r2(b.h + phi), l: b.l, w: b.w, d: r2(Math.hypot(b.x, b.y)), pts };
+});
+---
+<canvas class="wt-canvas canon-canvas" data-canon={JSON.stringify({ eta: 1.0, cars })}
+  role="img" aria-label="Three car proposals at different positions and headings in the LiDAR frame are each translated to their box centre and rotated so that their heading lies along X'; in this canonical frame they all look the same way round, and the distance to the sensor is added back as a feature"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  type Car = { x: number; y: number; h: number; l: number; w: number; d: number; pts: number[][] };
+
+  const HEADLINE = [
+    'Proposals in the LiDAR frame: each car at its own pose',
+    'Shift each proposal to its centre, rotate it by −θ',
+    'Canonical frame: every car points along X′',
+    'The distance to the sensor is lost, so it is added back',
+  ];
+  const HEADLINE_SHORT = [
+    'Each proposal at its own pose',
+    'Shift to the centre, rotate by −θ',
+    'Every car now points along X′',
+    'Distance is added back as a feature',
+  ];
+
+  document.querySelectorAll<HTMLCanvasElement>('.canon-canvas').forEach((canvas) => {
+    const { eta, cars }: { eta: number; cars: Car[] } = JSON.parse(canvas.dataset.canon!);
+    const ctx = canvas.getContext('2d')!;
+
+    // Beats: LiDAR frame · transform · canonical · depth feature
+    const T = { lidar: 0, move: 4.5, canon: 10.0, depth: 14.5, end: 20.5 };
+    const BEATS = [T.lidar, T.move, T.canon, T.depth];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    const moveAt = (i: number) => T.move + 0.6 + i * 1.4; // car i starts its move
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const hue = [200, 28, 145];
+      const carColor = (i: number, a = 1) => `hsl(${hue[i]} 75% ${dark ? 62 : 45}% / ${a})`;
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.move ? 0 : t < T.canon ? 1 : t < T.depth ? 2 : 3;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+
+      // Layout: LiDAR frame on the left, canonical frame on the right
+      const narrow = W < 520;
+      const top = 80, gap = narrow ? 10 : 40;
+      const pw = (W - gap) / 2, ph = H - top - 6;
+      const lcx = pw / 2, rcx = pw + gap + pw / 2;
+      // Left: sensor at the bottom left area; fit all cars
+      const xs = cars.flatMap((c) => [c.x - 4.2, c.x + 4.2, 0]), ys = cars.flatMap((c) => [c.y - 4.2, c.y + 4.2, 0]);
+      const bx0 = Math.min(...xs), bx1 = Math.max(...xs), by0 = Math.min(...ys), by1 = Math.max(...ys);
+      const SL = Math.min(pw / (bx1 - bx0), ph / (by1 - by0));
+      const lox = lcx - ((bx0 + bx1) / 2) * SL, loy = top + ph / 2 + ((by0 + by1) / 2) * SL;
+      const L = (x: number, y: number) => [lox + x * SL, loy - y * SL] as const;
+      // Right: canonical frame, centred, sized for the enlarged box
+      const maxL = Math.max(...cars.map((c) => c.l)) + 2 * eta;
+      const SR = Math.min((pw - 20) / maxL, (ph - 20) / (maxL * 0.75));
+      const rcy = top + ph / 2;
+
+      // Headline, titles and status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText('LiDAR frame', lcx, 42);
+      ctx.fillText('Canonical frame', rcx, 42);
+      const lNote = narrow ? ['3 proposals, +η', 'translate + rotate', 'translate + rotate', 'sensor at origin'][beat]
+        : [`3 proposals, enlarged by η = ${eta} m`, 'origin → box centre, X′ → heading', 'origin → box centre, X′ → heading', 'distance to the sensor differs'][beat];
+      const rNote = narrow ? ['empty', 'arriving…', 'same orientation', 'depth d added'][beat]
+        : ['(empty)', 'points arrive one proposal at a time', 'box = (0, 0, 0, h, w, l, 0)', 'input per point: [p̃, r, m, d]'][beat];
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(lNote, lcx, 60, pw);
+      ctx.fillText(rNote, rcx, 60, pw);
+
+      // Panels' frames
+      ctx.strokeStyle = faint; ctx.lineWidth = 1;
+      ctx.globalAlpha = fadeAll * 0.35;
+      ctx.strokeRect(0.5, top - 4, pw - 1, ph + 4);
+      ctx.strokeRect(pw + gap + 0.5, top - 4, pw - 1, ph + 4);
+      // Canonical axes X′ (right) and Z′ (up)
+      ctx.globalAlpha = fadeAll * 0.8;
+      ctx.strokeStyle = faint; ctx.fillStyle = faint; ctx.lineWidth = 1.2;
+      const ax = pw / 2 - 12;
+      ctx.beginPath(); ctx.moveTo(rcx - ax, rcy); ctx.lineTo(rcx + ax, rcy); ctx.moveTo(rcx, rcy + ph / 2 - 8); ctx.lineTo(rcx, top + 4); ctx.stroke();
+      ctx.font = `500 ${narrow ? 10 : 11}px "IBM Plex Mono", monospace`;
+      ctx.textAlign = 'right';
+      ctx.fillText('X′', rcx + ax, rcy - 5);
+      ctx.textAlign = 'left';
+      ctx.fillText('Z′', rcx + 5, top + 14);
+      // Sensor
+      const [sx, sy] = L(0, 0);
+      ctx.globalAlpha = fadeAll;
+      ctx.fillStyle = heading;
+      ctx.beginPath(); ctx.arc(sx, sy, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillText('LiDAR', sx, sy + 15);
+
+      // Each proposal: points + box + enlarged box, interpolated from the LiDAR pose to the canonical pose
+      const boxLines = (cx: number, cy: number, k: number, a: number, l: number, w: number) => {
+        const c = Math.cos(a), s = Math.sin(a);
+        ctx.beginPath();
+        [[1, 1], [1, -1], [-1, -1], [-1, 1]].forEach(([p, q], j) => {
+          const u = (p * l) / 2, v = (q * w) / 2;
+          const x = cx + k * (u * c - v * s), y = cy - k * (u * s + v * c);
+          if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.closePath();
+      };
+      cars.forEach((car, i) => {
+        const m = ease(ramp(t, moveAt(i), moveAt(i) + 2.2));
+        const [lx, ly] = L(car.x, car.y);
+        const cx = lx + (rcx - lx) * m, cy = ly + (rcy - ly) * m;
+        const k = SL + (SR - SL) * m, a = car.h * (1 - m);
+        const c = Math.cos(a), s = Math.sin(a);
+        // Ghost of the proposal left behind in the LiDAR frame
+        if (m > 0) {
+          ctx.globalAlpha = fadeAll * 0.25;
+          ctx.strokeStyle = carColor(i); ctx.lineWidth = 1;
+          boxLines(lx, ly, SL, car.h, car.l, car.w); ctx.stroke();
+        }
+        ctx.globalAlpha = fadeAll * (m > 0 && m < 1 ? 0.95 : 0.85);
+        ctx.fillStyle = carColor(i);
+        for (const [u, v] of car.pts) {
+          ctx.beginPath();
+          ctx.arc(cx + k * (u * c - v * s), cy - k * (u * s + v * c), narrow ? 1.1 : 1.4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.strokeStyle = carColor(i); ctx.lineWidth = 1.6;
+        boxLines(cx, cy, k, a, car.l, car.w); ctx.stroke();
+        // Enlarged box (η on each side) as a dashed outline
+        ctx.setLineDash([4, 3]); ctx.lineWidth = 1;
+        ctx.globalAlpha = fadeAll * 0.6;
+        boxLines(cx, cy, k, a, car.l + 2 * eta, car.w + 2 * eta); ctx.stroke();
+        ctx.setLineDash([]);
+        // Heading arrow
+        ctx.globalAlpha = fadeAll;
+        ctx.lineWidth = 1.6;
+        const hx = cx + k * (car.l / 2 + 0.6) * c, hy = cy - k * (car.l / 2 + 0.6) * s;
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(hx, hy); ctx.stroke();
+        // Beat 4: the distance to the sensor, drawn in the LiDAR frame and written next to the canonical copy
+        if (beat === 3) {
+          const on = ease(ramp(t, T.depth + 0.4 + i * 0.6, T.depth + 1.0 + i * 0.6));
+          ctx.globalAlpha = fadeAll * on;
+          ctx.strokeStyle = carColor(i); ctx.lineWidth = 1.2; ctx.setLineDash([3, 3]);
+          ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(lx, ly); ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = carColor(i);
+          ctx.font = `600 ${narrow ? 10 : 12}px "IBM Plex Mono", monospace`;
+          ctx.textAlign = 'left';
+          const ly2 = top + ph - 6 - (cars.length - 1 - i) * (narrow ? 12 : 16);
+          ctx.fillText(`d ≈ ${car.d.toFixed(1)} m`, pw + gap + 8, ly2);
+        }
+      });
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.end - 1); });
+    if (still) { frame(T.end - 1); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

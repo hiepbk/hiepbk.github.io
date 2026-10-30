@@ -1,0 +1,237 @@
+---
+// "Two-stage CenterPoint" on one real car, BEV. Beat 1: the first-stage box (an illustrative error from the
+// ground truth) on the map-view features M. Beat 2: five points — the centre and the four side-face centres (the
+// top and bottom face centres project onto the centre). Beat 3: each point reads M by bilinear interpolation
+// from its 4 neighbouring cells; the five features are concatenated. Beat 4: an MLP predicts the IoU-guided score
+// Î and a box refinement; the final score is √(Ŷ · Î). Scores are illustrative.
+import { cropScene, loadScene, bevBox } from '../../../lib/walkthroughFiguresB';
+
+const r2 = (v: number) => Math.round(v * 100) / 100;
+const gt = bevBox(loadScene().boxes[1]);
+const CELL = 0.4;
+const X0 = Math.floor((gt.x - 4.4) / CELL) * CELL, Y0 = Math.floor((gt.y - 2.8) / CELL) * CELL;
+const NX = 22, NY = 14;
+const pts = cropScene(X0, X0 + NX * CELL, Y0, Y0 + NY * CELL, 100000, { ground: false });
+const occ = new Array(NX * NY).fill(0);
+for (const p of pts) {
+  const i = Math.floor((p[0] - X0) / CELL), j = Math.floor((p[1] - Y0) / CELL);
+  if (i >= 0 && i < NX && j >= 0 && j < NY) occ[j * NX + i]++;
+}
+const feat = occ.map((n) => r2(Math.min(1, Math.log1p(n) / Math.log1p(40))));
+const disp = pts.filter((_, k) => k % 3 === 0).flatMap((p) => [Math.round((p[0] - X0) * 100), Math.round((p[1] - Y0) * 100)]);
+const box1 = { x: r2(gt.x - X0 - 0.4), y: r2(gt.y - Y0 + 0.22), l: r2(gt.l * 0.9), w: r2(gt.w * 1.08), h: r2(gt.h - 0.09) };
+const box2 = { x: r2(gt.x - X0), y: r2(gt.y - Y0), l: gt.l, w: gt.w, h: gt.h };
+const data = { CELL, NX, NY, feat, disp, box1, box2, Y: 0.71, I: 0.83 };
+---
+<canvas class="wt-canvas fivept-canvas" data-fivept={JSON.stringify(data)}
+  role="img" aria-label="Two-stage CenterPoint: from the first-stage box, five points — the centre and the four side-face centres — read the BEV feature map by bilinear interpolation; the five features are concatenated and an MLP predicts an IoU-guided score and a box refinement"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  import { iconPalette, drawBlock } from '../../../lib/figureIcons';
+  type Box = { x: number; y: number; l: number; w: number; h: number };
+  type Data = { CELL: number; NX: number; NY: number; feat: number[]; disp: number[]; box1: Box; box2: Box; Y: number; I: number };
+
+  const HEADLINE = [
+    'Stage 1 gives a box, but its centre feature may miss the object',
+    'Five points: the centre and the four side-face centres',
+    'Each point reads the BEV map by bilinear interpolation',
+    'Concatenate → MLP → IoU-guided score and box refinement',
+  ];
+  const HEADLINE_SHORT = [
+    'Stage 1 gives a box',
+    'Five points: centre + 4 faces',
+    'Bilinear lookup on the BEV map',
+    'MLP → score and refinement',
+  ];
+  const NAMES = ['centre', 'front', 'back', 'left', 'right'];
+
+  document.querySelectorAll<HTMLCanvasElement>('.fivept-canvas').forEach((canvas) => {
+    const d: Data = JSON.parse(canvas.dataset.fivept!);
+    const ctx = canvas.getContext('2d')!;
+    const XW = d.NX * d.CELL, YW = d.NY * d.CELL;
+    // Five points of a box: centre, then the centres of the front, back, left and right faces
+    const five = (b: Box) => {
+      const c = Math.cos(b.h), s = Math.sin(b.h);
+      return [[0, 0], [b.l / 2, 0], [-b.l / 2, 0], [0, b.w / 2], [0, -b.w / 2]].map(([u, v]) => [b.x + u * c - v * s, b.y + u * s + v * c]);
+    };
+    const P = five(d.box1);
+
+    // Beats: box · five points · bilinear · MLP
+    const T = { box: 0, five: 4.0, bil: 8.5, mlp: 15.0, end: 21.5 };
+    const BEATS = [T.box, T.five, T.bil, T.mlp];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    const pointAt = (k: number) => T.five + 0.5 + k * 0.6;
+    const bilAt = (k: number) => T.bil + 0.4 + k * 1.2;
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const teal = css.getPropertyValue('--accent-3').trim() || '#0ea5a0';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const neutral = dark ? '#8b97ab' : '#64748b';
+      const hue = [280, 200, 175, 28, 145];
+      const pColor = (k: number, a = 1) => `hsl(${hue[k]} 75% ${dark ? 62 : 45}% / ${a})`;
+      ctx.clearRect(0, 0, W, H);
+      const pal = iconPalette();
+
+      const beat = t < T.five ? 0 : t < T.bil ? 1 : t < T.mlp ? 2 : 3;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+
+      // Layout: BEV map on the left, feature vector and heads on the right
+      const narrow = W < 520;
+      const panelW = narrow ? 110 : 210;
+      const px0 = W - panelW - (narrow ? 4 : 20);
+      const top = 80;
+      const S = Math.min((px0 - (narrow ? 4 : 16)) / XW, (H - top - 6) / YW);
+      const ox = (px0 - S * XW) / 2, oy = top + (H - top - S * YW) / 2;
+      const mx = (x: number) => ox + x * S, my = (y: number) => oy + (YW - y) * S;
+      const cs = d.CELL * S;
+      const viewCx = px0 / 2, pcx = px0 + panelW / 2;
+
+      // Headline, titles and status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(narrow ? 'BEV map M' : 'Map-view features M', viewCx, 42);
+      ctx.fillText('Second stage', pcx, 42, panelW + 10);
+      const lNote = narrow
+        ? ['first-stage box', 'top/bottom → centre', '4 cells per point', 'refined box']
+        : ['first-stage box from the heatmap peak', 'top and bottom face centres fall on the centre', 'weights from the distance to 4 cell centres', 'box refinement + IoU-guided score'];
+      const rNote = narrow ? ['', '5 points', '5 features', 'score'] : ['', '5 points per box', 'concatenate 5 features', `Q̂ = √(Ŷ · Î)`];
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(lNote[beat], viewCx, 60, px0 - 4);
+      ctx.fillText(rNote[beat], pcx, 60, panelW);
+
+      // Feature map cells and points
+      for (let j = 0; j < d.NY; j++) for (let i = 0; i < d.NX; i++) {
+        const fv = d.feat[j * d.NX + i];
+        ctx.globalAlpha = fadeAll * (fv > 0 ? 0.12 + fv * (dark ? 0.5 : 0.4) : dark ? 0.06 : 0.05);
+        ctx.fillStyle = dark ? '#8b97ab' : '#64748b';
+        ctx.fillRect(mx(i * d.CELL) + 0.5, my((j + 1) * d.CELL) + 0.5, cs - 1, cs - 1);
+      }
+      ctx.globalAlpha = fadeAll * 0.6;
+      ctx.fillStyle = neutral;
+      for (let i = 0; i < d.disp.length; i += 2) ctx.fillRect(mx(d.disp[i] / 100) - 0.7, my(d.disp[i + 1] / 100) - 0.7, 1.4, 1.4);
+
+      // Box: first stage, then refined
+      const ref = beat === 3 ? ease(ramp(t, T.mlp + 2.6, T.mlp + 3.8)) : 0;
+      const b: Box = {
+        x: d.box1.x + (d.box2.x - d.box1.x) * ref, y: d.box1.y + (d.box2.y - d.box1.y) * ref,
+        l: d.box1.l + (d.box2.l - d.box1.l) * ref, w: d.box1.w + (d.box2.w - d.box1.w) * ref, h: d.box1.h + (d.box2.h - d.box1.h) * ref,
+      };
+      const c = Math.cos(b.h), s = Math.sin(b.h);
+      ctx.globalAlpha = fadeAll * ease(ramp(t, 0.3, 0.9));
+      ctx.strokeStyle = teal; ctx.lineWidth = 2;
+      ctx.beginPath();
+      [[1, 1], [1, -1], [-1, -1], [-1, 1]].forEach(([p, q], k) => {
+        const x = b.x + (p * b.l / 2) * c - (q * b.w / 2) * s, y = b.y + (p * b.l / 2) * s + (q * b.w / 2) * c;
+        if (k === 0) ctx.moveTo(mx(x), my(y)); else ctx.lineTo(mx(x), my(y));
+      });
+      ctx.closePath(); ctx.stroke();
+
+      // Five points (fixed at the first-stage box) with their bilinear cells
+      P.forEach(([x, y], k) => {
+        if (t < pointAt(k) || beat === 3 && ref > 0.5) return;
+        const on = ease(ramp(t, pointAt(k), pointAt(k) + 0.4));
+        const active = beat === 2 && t >= bilAt(k) && t < bilAt(k + 1);
+        if (beat === 2 && t >= bilAt(k)) {
+          // The 4 cells whose centres surround the point, with lines weighted by the bilinear weights
+          const gi = Math.floor(x / d.CELL - 0.5), gj = Math.floor(y / d.CELL - 0.5);
+          const fx = x / d.CELL - 0.5 - gi, fy = y / d.CELL - 0.5 - gj;
+          [[0, 0, (1 - fx) * (1 - fy)], [1, 0, fx * (1 - fy)], [0, 1, (1 - fx) * fy], [1, 1, fx * fy]].forEach(([a, bb, w]) => {
+            const cx = (gi + a + 0.5) * d.CELL, cy = (gj + bb + 0.5) * d.CELL;
+            ctx.globalAlpha = fadeAll * (active ? 1 : 0.5);
+            ctx.strokeStyle = pColor(k); ctx.lineWidth = 1.4;
+            ctx.strokeRect(mx(cx) - cs / 2 + 1, my(cy) - cs / 2 + 1, cs - 2, cs - 2);
+            if (active) {
+              ctx.lineWidth = 0.6 + 3 * w;
+              ctx.beginPath(); ctx.moveTo(mx(x), my(y)); ctx.lineTo(mx(cx), my(cy)); ctx.stroke();
+            }
+          });
+        }
+        ctx.globalAlpha = fadeAll * on;
+        ctx.fillStyle = pColor(k);
+        ctx.beginPath(); ctx.arc(mx(x), my(y), active ? 5 : 4, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = dark ? '#0b0f17' : '#ffffff'; ctx.lineWidth = 1.2; ctx.stroke();
+      });
+
+      // Panel: five feature segments (filled as each point is read), the MLP and the outputs
+      const segH = narrow ? 16 : 20, segW = (panelW - 10) / 5, sy = top + 16;
+      ctx.textAlign = 'center';
+      NAMES.forEach((name, k) => {
+        const filled = beat >= 2 && t >= bilAt(k) + 0.5;
+        const x = px0 + 5 + k * segW;
+        ctx.globalAlpha = fadeAll * (beat >= 1 && t >= pointAt(k) ? 1 : 0.35);
+        ctx.fillStyle = filled ? pColor(k, 0.85) : 'transparent';
+        if (filled) ctx.fillRect(x + 1, sy, segW - 2, segH);
+        ctx.strokeStyle = pColor(k); ctx.lineWidth = 1.2;
+        ctx.strokeRect(x + 1, sy, segW - 2, segH);
+        ctx.font = `500 ${narrow ? 8 : 10}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = text;
+        ctx.fillText(narrow ? name[0].toUpperCase() : name, x + segW / 2, sy + segH + 12, segW);
+      });
+      const rows = [
+        { k: 'MLP', v: narrow ? 'shared, 2 layers' : 'shared 2-layer MLP' },
+        { k: 'IoU-guided score Î', v: `${d.I.toFixed(2)}` },
+        { k: 'final score', v: narrow ? `√(${d.Y}·${d.I}) = ${Math.sqrt(d.Y * d.I).toFixed(2)}` : `√(${d.Y} · ${d.I}) = ${Math.sqrt(d.Y * d.I).toFixed(2)}` },
+        { k: 'box', v: 'refined' },
+      ];
+      const ry0 = sy + segH + (narrow ? 34 : 40), rg = (H - ry0 - 8) / rows.length;
+      rows.forEach((r, k) => {
+        const on = beat === 3 && t >= T.mlp + 0.5 + k * 0.8;
+        const y = ry0 + k * rg;
+        if (k === 0) {
+          const bh = Math.min(narrow ? 18 : 28, rg - (narrow ? 12 : 15)), bw = bh * 1.6;
+          drawBlock(ctx, 'mlp', pcx - bw / 2, y - 10, bw, bh, pal,
+            { label: narrow ? 'MLP' : 'shared 2-layer MLP', shared: true, active: beat === 3 ? ease(ramp(t, T.mlp + 0.3, T.mlp + 1.1)) : 0, alpha: fadeAll * (beat === 3 ? 1 : 0.4), compact: narrow });
+          return;
+        }
+        ctx.globalAlpha = fadeAll * (on ? 1 : 0.35);
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = faint;
+        ctx.fillText(r.k, pcx, y, panelW);
+        ctx.font = `600 ${narrow ? 10 : 13}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = on ? accent : faint;
+        ctx.fillText(on ? r.v : '?', pcx, y + (narrow ? 14 : 17), panelW);
+      });
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.bil + 3); });
+    if (still) { frame(T.bil + 3); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

@@ -1,0 +1,258 @@
+---
+// "Stage 1 of PointRCNN" on the real scan, top view. Beat 1: raw points, no anchors. Beat 2: per-point
+// segmentation, foreground points light up. Beat 3: every foreground point proposes one box around itself.
+// Beat 4: oriented BEV NMS (IoU 0.8) keeps a few. The proposed boxes are illustrative (ground truth plus noise
+// that grows with the point's distance to the centre); the NMS runs here at build time on those boxes.
+import { cropScene, loadScene, bevBox, seeded } from '../../../lib/walkthroughFiguresB';
+
+const X0 = -18, X1 = 18, Y0 = -9, Y1 = 13;
+const pts = cropScene(X0, X1, Y0, Y1, 1500, { seed: 5 });
+const boxes = loadScene().boxes.map(bevBox);
+const rand = seeded(3);
+const gauss = () => Math.sqrt(-2 * Math.log(rand() + 1e-9)) * Math.cos(2 * Math.PI * rand());
+const r2 = (v: number) => Math.round(v * 100) / 100;
+
+// One proposal per foreground point: [point index, x, y, l, w, heading, score, object]
+type Prop = [number, number, number, number, number, number, number, number];
+const props: Prop[] = [];
+pts.forEach((p, i) => {
+  if (p[4] < 0) return;
+  const b = boxes[p[4]];
+  const d = Math.hypot(p[0] - b.x, p[1] - b.y);
+  const s = 0.04 + 0.04 * d;
+  props.push([i, r2(b.x + s * gauss()), r2(b.y + s * gauss()), r2(b.l * (1 + 0.04 * gauss())), r2(b.w * (1 + 0.04 * gauss())),
+    r2(b.h + 0.025 * gauss()), r2(Math.max(0.05, 0.95 - 0.12 * d + 0.08 * gauss())), p[4]]);
+});
+
+// Oriented BEV IoU by sampling a 5 cm grid inside each box
+const inside = (x: number, y: number, q: Prop) => {
+  const c = Math.cos(q[5]), s = Math.sin(q[5]), dx = x - q[1], dy = y - q[2];
+  return Math.abs(dx * c + dy * s) <= q[3] / 2 && Math.abs(-dx * s + dy * c) <= q[4] / 2;
+};
+const iou = (a: Prop, b: Prop) => {
+  let inter = 0, n = 0;
+  const c = Math.cos(a[5]), s = Math.sin(a[5]);
+  for (let u = -a[3] / 2; u <= a[3] / 2; u += 0.05) for (let v = -a[4] / 2; v <= a[4] / 2; v += 0.05) {
+    n++;
+    if (inside(a[1] + u * c - v * s, a[2] + u * s + v * c, b)) inter++;
+  }
+  const I = (inter / n) * a[3] * a[4];
+  return I / (a[3] * a[4] + b[3] * b[4] - I);
+};
+const order = props.map((_, k) => k).sort((a, b) => props[b][6] - props[a][6]);
+const keep: number[] = [];
+for (const k of order) if (keep.every((j) => props[j][7] !== props[k][7] || iou(props[j], props[k]) <= 0.8)) keep.push(k);
+
+const flat = pts.flatMap((p) => [Math.round(p[0] * 100), Math.round(p[1] * 100), p[4] >= 0 ? 1 : 0]);
+const data = { range: [X0, X1, Y0, Y1], pts: flat, props, keep };
+---
+<canvas class="wt-canvas segprop-canvas" data-segprop={JSON.stringify(data)}
+  role="img" aria-label="PointRCNN stage 1 on a real LiDAR scan seen from above: every point is classified as foreground or background, each foreground point proposes one 3D box, and non-maximum suppression keeps a few"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  import { iconPalette, drawBlock } from '../../../lib/figureIcons';
+  type Prop = [number, number, number, number, number, number, number, number];
+  type Data = { range: number[]; pts: number[]; props: Prop[]; keep: number[] };
+
+  const HEADLINE = [
+    'Stage 1 starts from raw points: no anchors, no grid',
+    'Segment: every point is scored foreground or background',
+    'Each foreground point proposes one box around itself',
+    'NMS keeps the best of the overlapping proposals',
+  ];
+  const HEADLINE_SHORT = [
+    'Raw points: no anchors, no grid',
+    'Segment: foreground or background',
+    'Each foreground point proposes a box',
+    'NMS keeps the best proposals',
+  ];
+  const fmt = (n: number) => n.toLocaleString('en-US');
+
+  document.querySelectorAll<HTMLCanvasElement>('.segprop-canvas').forEach((canvas) => {
+    const d: Data = JSON.parse(canvas.dataset.segprop!);
+    const ctx = canvas.getContext('2d')!;
+    const [X0, X1, Y0, Y1] = d.range;
+    const N = d.pts.length / 3;
+    const px = (i: number) => d.pts[3 * i] / 100, py = (i: number) => d.pts[3 * i + 1] / 100;
+    const fg = (i: number) => d.pts[3 * i + 2] === 1;
+    const nFg = d.props.length;
+    const kept = new Set(d.keep);
+
+    // Beats: raw points · segmentation sweep · proposals · NMS
+    const T = { raw: 0, seg: 4.0, prop: 9.5, nms: 16.0, end: 23.0 };
+    const BEATS = [T.raw, T.seg, T.prop, T.nms];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    // Segmentation sweeps left to right; proposals appear one point at a time (left to right as well)
+    const segAt = (x: number) => T.seg + 0.6 + 2.8 * ((x - X0) / (X1 - X0));
+    const propOrder = d.props.map((_, k) => k).sort((a, b) => px(d.props[a][0]) - px(d.props[b][0]));
+    const propAt = new Array<number>(nFg);
+    propOrder.forEach((k, r) => (propAt[k] = T.prop + 0.6 + (3.6 * r) / nFg));
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    const PANEL_BLOCKS: ({ kind: 'mlp'; label: string } | null)[] = [{ kind: 'mlp', label: 'seg head' }, { kind: 'mlp', label: 'box head' }, null];
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const teal = css.getPropertyValue('--accent-3').trim() || '#0ea5a0';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const orange = dark ? '#ffb86b' : '#d9730d';
+      const neutral = dark ? '#6f7a8e' : '#a3adbb';
+      ctx.clearRect(0, 0, W, H);
+      const pal = iconPalette();
+
+      const beat = t < T.seg ? 0 : t < T.prop ? 1 : t < T.nms ? 2 : 3;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const nms = ease(ramp(t, T.nms + 0.6, T.nms + 2.2));
+
+      // Layout: top view on the left, a count panel on the right
+      const narrow = W < 520;
+      const panelW = narrow ? 92 : 170;
+      const px0 = W - panelW - (narrow ? 2 : 24);
+      const top = 80;
+      const S = Math.min((px0 - (narrow ? 8 : 24)) / (X1 - X0), (H - top - 8) / (Y1 - Y0));
+      const ox = (px0 - S * (X1 - X0)) / 2, oy = top + (H - top - S * (Y1 - Y0)) / 2;
+      const mx = (x: number) => ox + (x - X0) * S, my = (y: number) => oy + (Y1 - y) * S;
+      const viewCx = px0 / 2;
+
+      // Headline, titles and status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(narrow ? 'Top view' : 'LiDAR scan, top view', viewCx, 42);
+      ctx.fillText('Count', px0 + panelW / 2, 42);
+      const note = narrow
+        ? ['raw x, y, z', 'per-point mask', 'one box per point', 'oriented BEV NMS'][beat]
+        : ['raw x, y, z per point', 'per-point foreground mask', 'one bin-based box per foreground point', 'oriented NMS, BEV IoU 0.8'][beat];
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(note, viewCx, 60, px0 - 8);
+
+      const dot = (x: number, y: number, r: number, fill: string) => {
+        ctx.fillStyle = fill;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      };
+      const boxPath = (q: Prop) => {
+        const c = Math.cos(q[5]), s = Math.sin(q[5]);
+        ctx.beginPath();
+        [[1, 1], [1, -1], [-1, -1], [-1, 1]].forEach(([a, b], k) => {
+          const x = q[1] + (a * q[3] / 2) * c - (b * q[4] / 2) * s, y = q[2] + (a * q[3] / 2) * s + (b * q[4] / 2) * c;
+          if (k === 0) ctx.moveTo(mx(x), my(y)); else ctx.lineTo(mx(x), my(y));
+        });
+        ctx.closePath();
+      };
+
+      // Points: grey until the segmentation sweep reaches them; foreground in orange, background fades
+      const fadeIn = ease(ramp(t, 0, 0.6));
+      const pr = narrow ? 1.0 : 1.3;
+      for (let i = 0; i < N; i++) {
+        const seg = beat >= 1 ? ease(ramp(t, segAt(px(i)), segAt(px(i)) + 0.3)) : 0;
+        ctx.globalAlpha = fadeAll * fadeIn * (fg(i) ? 0.85 : 0.85 - 0.45 * seg);
+        dot(mx(px(i)), my(py(i)), fg(i) && seg > 0.5 ? pr + 0.5 : pr, fg(i) && seg > 0.5 ? orange : neutral);
+      }
+      // Sweep line of the segmentation
+      if (beat === 1) {
+        const sx = mx(X0 + ((t - T.seg - 0.6) / 2.8) * (X1 - X0));
+        if (sx > mx(X0) && sx < mx(X1)) {
+          ctx.globalAlpha = fadeAll * 0.6;
+          ctx.strokeStyle = accent; ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.moveTo(sx, my(Y1)); ctx.lineTo(sx, my(Y0)); ctx.stroke();
+        }
+      }
+
+      // Proposals: a line from the point to its predicted centre, and the box; NMS removes most of them
+      let shown = 0;
+      if (beat >= 2) {
+        d.props.forEach((q, k) => {
+          const on = ease(ramp(t, propAt[k], propAt[k] + 0.4));
+          if (on <= 0) return;
+          shown++;
+          const survive = kept.has(k);
+          const a = on * (survive ? 1 : 1 - nms);
+          if (a <= 0.01) return;
+          const fresh = 1 - ramp(t, propAt[k] + 0.4, propAt[k] + 1.6);
+          ctx.globalAlpha = fadeAll * a * (0.12 + 0.6 * fresh);
+          ctx.strokeStyle = orange; ctx.lineWidth = 0.8;
+          ctx.beginPath(); ctx.moveTo(mx(px(q[0])), my(py(q[0]))); ctx.lineTo(mx(q[1]), my(q[2])); ctx.stroke();
+          ctx.globalAlpha = fadeAll * a * (survive && nms > 0 ? 0.3 + 0.7 * nms : 0.07 + 0.6 * fresh);
+          ctx.strokeStyle = teal; ctx.lineWidth = survive && nms > 0 ? 1 + 1.2 * nms : 1;
+          boxPath(q); ctx.stroke();
+        });
+      }
+
+      // Count panel: four rows, the current one highlighted
+      const rows = [
+        { sym: 'points', val: fmt(N) },
+        { sym: 'foreground', val: beat >= 1 ? fmt(nFg) : '?' },
+        { sym: 'proposals', val: beat >= 2 ? fmt(shown) : '?' },
+        { sym: 'after NMS', val: beat >= 3 ? fmt(d.keep.length) : '?' },
+      ];
+      const rowY0 = top + 14, rowGap = (H - rowY0 - 22) / 3;
+      const pcx = px0 + panelW / 2;
+      ctx.textAlign = 'center';
+      rows.forEach((row, k) => {
+        const y = rowY0 + k * rowGap;
+        ctx.globalAlpha = fadeAll * (k <= beat ? 1 : 0.35);
+        ctx.font = `500 ${narrow ? 10 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = faint;
+        ctx.fillText(row.sym, pcx, y, panelW);
+        ctx.font = `600 ${narrow ? 12 : 15}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = k === beat ? (beat === 0 ? heading : accent) : k < beat ? text : faint;
+        ctx.fillText(row.val, pcx, y + (narrow ? 16 : 20), panelW);
+        if (k < 3) {
+          const y0 = y + (narrow ? 23 : 28), y1 = y + rowGap - (narrow ? 13 : 15);
+          if (y1 - y0 < 8) return;
+          const blk = PANEL_BLOCKS[k];
+          if (blk) {
+            // The learned layer that turns this row into the next one
+            const bh = Math.min(narrow ? 18 : 24, y1 - y0 - (narrow ? 0 : 12)), bw = bh * 1.5;
+            const act = beat === k + 1 ? ease(ramp(t, BEATS[k + 1] + 0.2, BEATS[k + 1] + 1.0)) : 0;
+            drawBlock(ctx, blk.kind, pcx - bw / 2, y0 + (narrow ? (y1 - y0 - bh) / 2 : 0), bw, bh, pal,
+              { label: narrow ? undefined : blk.label, shared: true, active: act, alpha: fadeAll * (k < beat ? 1 : 0.4), compact: narrow });
+            return;
+          }
+          ctx.globalAlpha = fadeAll * (k < beat ? 0.9 : 0.35);
+          ctx.strokeStyle = faint; ctx.fillStyle = faint; ctx.lineWidth = 1.2;
+          ctx.beginPath(); ctx.moveTo(pcx, y0); ctx.lineTo(pcx, y1 - 5); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(pcx, y1); ctx.lineTo(pcx - 4, y1 - 6); ctx.lineTo(pcx + 4, y1 - 6); ctx.closePath(); ctx.fill();
+        }
+      });
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.nms - 1); });
+    if (still) { frame(T.nms - 1); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

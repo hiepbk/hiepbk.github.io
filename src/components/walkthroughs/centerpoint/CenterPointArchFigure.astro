@@ -1,0 +1,35 @@
+---
+// Main architecture of CenterPoint, laid out like the paper's Figure 2: backbone → map view → heatmap head and
+// regression heads → peaks → second stage → tracking. One node per row of the walkthrough's pipeline table, same
+// names and shapes; data flows from the raw points to boxes and tracks, one table row at a time.
+const spec = {
+  cols: 6, rows: 2, colsN: 4, rowsN: 3,
+  nodes: [
+    { stage: 'Input', glyph: 'points', shape: 'raw points', opText: 'LiDAR points (current and previous sweep)',
+      head: 'Input: the LiDAR sweep (and the previous one, for velocity)', headN: 'Input: LiDAR sweeps', pos: [0, 0], posN: [0, 0] },
+    { stage: '3D backbone', block: 'backbone', shape: 'W × L × F', opText: 'VoxelNet-style sparse voxels or PointPillars',
+      head: 'An unchanged 3D backbone gives the map view M', headN: 'Backbone → map view M', pos: [1, 0], posN: [1, 0] },
+    { stage: 'Shared conv', block: 'conv2d', shape: 'W × L × C', opText: '3 × 3 conv + BN + ReLU',
+      head: 'One shared 3 × 3 convolution for all heads', headN: 'Shared 3 × 3 conv', pos: [2, 0], posN: [2, 0] },
+    { stage: 'Heatmap head', block: 'conv2d', shape: 'W × L × K', opText: 'two 3 × 3 convs',
+      head: 'Heatmap head: a peak at every object centre', headN: 'Heatmap: centre peaks', pos: [3, 0], posN: [3, 0] },
+    { stage: 'Regression heads', block: 'conv2d', shape: 'W × L × 10', opText: 'offset, height, size, heading, velocity: two 3 × 3 convs each',
+      head: 'Regression heads: offset, height, size, heading, velocity', headN: 'Regression maps', pos: [3, 1], posN: [2, 1], from: [2] },
+    { stage: 'Peak decode', op: 'peaks', shape: 'one box per peak', shapeN: 'box per peak', opText: 'local maxima, read the maps at each peak',
+      head: 'Each peak is one object: read its box from the maps', headN: 'Peaks → boxes', pos: [4, 0], posN: [3, 1], from: [3, 4] },
+    { stage: 'Second stage', block: 'mlp', shape: 'score + refined box', shapeN: 'score + box', opText: '5 bilinear features → MLP',
+      head: 'Second stage: five point features → score and refinement', headN: 'Five points → MLP', pos: [4, 1], posN: [3, 2] },
+    { stage: 'Tracking', op: 'match', shape: 'tracks', opText: 'back-project by −v, greedy closest match',
+      head: 'Tracking: move back by −v, match the closest track', headN: 'Tracking by −v + closest', pos: [5, 1], posN: [2, 2] },
+  ],
+};
+---
+<canvas class="wt-canvas arch-centerpoint-canvas" data-arch={JSON.stringify(spec)}
+  role="img" aria-label="CenterPoint architecture, one block per row of the pipeline table: LiDAR input, a 3D backbone giving the map view, a shared convolution, the heatmap head and the regression heads, peak decoding, the five-point second stage and tracking"></canvas>
+
+<script>
+  import { runArchFigure, type ArchSpec } from '../../../lib/archFigureB';
+  document.querySelectorAll<HTMLCanvasElement>('.arch-centerpoint-canvas').forEach((canvas) => {
+    runArchFigure(canvas, JSON.parse(canvas.dataset.arch!) as ArchSpec);
+  });
+</script>

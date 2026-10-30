@@ -1,0 +1,268 @@
+---
+// MV3D's front-view encoding, on a 140° sector of the real PandaSet scan. Beat 1 sweeps the azimuth: every point
+// in the bird's-eye fan is sent to column c = ⌊atan2(y, x) / Δθ⌋ and row r = ⌊atan2(z, √(x² + y²)) / Δφ⌋ of a
+// 64-row map (nearest point wins), coloured by height. Beat 2 shows the distance channel. Beat 3 compares two
+// parked cars of similar length: same size in the bird's-eye view, very different widths in the front view.
+// The map is computed here (64 rows × 140 columns of 1°, 2 bytes per cell); the fan shows a subsample.
+import { loadScene, pointsInBox, packBytes } from '../../../lib/walkthroughFiguresA';
+
+const AZ0 = 20, AZ1 = 160, COLS = 140, ROWS = 64, EL0 = -9, EL1 = 15, ZS = 1.0; // ZS: sensor height above the road
+const R_FAN = 18; // radius of the fan drawn in the bird's-eye view, metres
+const { points, boxes } = loadScene();
+const col = (x: number, y: number) => Math.floor(AZ1 - (Math.atan2(y, x) * 180) / Math.PI); // left = larger azimuth
+const row = (x: number, y: number, z: number) => Math.floor(((EL1 - (Math.atan2(z - ZS, Math.hypot(x, y)) * 180) / Math.PI) / (EL1 - EL0)) * ROWS);
+const dist = new Array(COLS * ROWS).fill(0), height = new Array(COLS * ROWS).fill(0), best = new Array(COLS * ROWS).fill(Infinity);
+const fan: number[] = [];
+points.forEach((p, i) => {
+  const c = col(p.x, p.y), r = row(p.x, p.y, p.z), d = Math.hypot(p.x, p.y);
+  if (c < 0 || c >= COLS || r < 0 || r >= ROWS) return;
+  const k = r * COLS + c;
+  if (d < best[k]) { best[k] = d; dist[k] = 1 + Math.min(254, d * 5); height[k] = 1 + Math.min(254, (p.z + 0.5) * 40); }
+  if (d < R_FAN && i % 6 === 0) fan.push((p.x + R_FAN) * 5, p.y * 10);
+});
+// Two parked cars of about the same length: one near, one far
+const cars = [boxes[2], boxes[0]].map((b) => {
+  const pts = pointsInBox(b);
+  const cs = pts.map((p) => col(p.x, p.y)), rs = pts.map((p) => row(p.x, p.y, p.z));
+  return {
+    c: [Math.min(...cs), Math.max(...cs) + 1], r: [Math.min(...rs), Math.max(...rs) + 1],
+    center: b.center.slice(0, 2), wl: b.size.slice(0, 2), yaw: b.yaw, d: Math.round(Math.hypot(b.center[0], b.center[1])),
+  };
+});
+const data = { az0: AZ0, az1: AZ1, cols: COLS, rows: ROWS, rFan: R_FAN, fan: packBytes(fan), dist: packBytes(dist), height: packBytes(height), cars };
+---
+<canvas class="wt-canvas front-view-canvas" data-fv={JSON.stringify(data)}
+  role="img" aria-label="A ray sweeps across a sector of the scan seen from above; every point goes to the column of its azimuth and the row of its elevation in a 64-row front-view map, coloured by height and then by distance; two cars of equal size appear at very different widths"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  type Car = { c: number[]; r: number[]; center: number[]; wl: number[]; yaw: number; d: number };
+  type Fv = { az0: number; az1: number; cols: number; rows: number; rFan: number; fan: string; dist: string; height: string; cars: Car[] };
+
+  const HEADLINE = [
+    'Each point goes to the column of its azimuth, the row of its elevation',
+    'Second channel: distance (third: intensity) → a dense 64-row image',
+    'But in the front view, size depends on distance',
+  ];
+  const HEADLINE_SHORT = ['Column = azimuth, row = elevation', 'Channels: height, distance, intensity', 'Front view: size depends on distance'];
+  const dec = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+  document.querySelectorAll<HTMLCanvasElement>('.front-view-canvas').forEach((canvas) => {
+    const d: Fv = JSON.parse(canvas.dataset.fv!);
+    const ctx = canvas.getContext('2d')!;
+    const fan = dec(d.fan), dist = dec(d.dist), height = dec(d.height);
+    const nFan = fan.length / 2, C = d.cols, R = d.rows;
+    const filled = dist.reduce((s, v) => s + (v ? 1 : 0), 0);
+
+    // The two channels as small images, one column at a time revealed by the sweep (rebuilt on theme change)
+    let imgDark: boolean | null = null;
+    const imgs: HTMLCanvasElement[] = [];
+    const build = (dark: boolean) => {
+      imgDark = dark;
+      imgs.length = 0;
+      [height, dist].forEach((ch, which) => {
+        const c = document.createElement('canvas');
+        c.width = C; c.height = R;
+        const g = c.getContext('2d')!;
+        const im = g.createImageData(C, R);
+        for (let k = 0; k < C * R; k++) {
+          if (!ch[k]) continue;
+          // height: low → blue, high → yellow; distance: near → bright, far → dark
+          const f = which === 0 ? Math.min(1, (ch[k] - 1) / 140) : 1 - Math.min(1, (ch[k] - 1) / 150);
+          const hue = which === 0 ? 220 - f * 175 : 280;
+          const l = which === 0 ? (dark ? 45 + f * 20 : 40 + f * 15) : dark ? 22 + f * 55 : 85 - f * 55;
+          const [r, gg, b] = hsl(hue, which === 0 ? 75 : 60, l);
+          im.data[4 * k] = r; im.data[4 * k + 1] = gg; im.data[4 * k + 2] = b; im.data[4 * k + 3] = 255;
+        }
+        g.putImageData(im, 0, 0);
+        imgs.push(c);
+      });
+    };
+    function hsl(h: number, s: number, l: number) {
+      s /= 100; l /= 100;
+      const f = (m: number) => { const k = (m + h / 30) % 12; return 255 * (l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1))); };
+      return [f(0), f(8), f(4)];
+    }
+
+    // Beats: azimuth sweep (height channel) · distance channel · two cars compared
+    const T = { sweep: 0, dist: 8.5, cars: 14.5, end: 22 };
+    const BEATS = [T.sweep, T.dist, T.cars];
+    const SW0 = 1.0, SW1 = 7.0; // the ray sweeps from the left edge (az1) to the right edge (az0)
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const cellBg = dark ? '#1a2232' : '#eef1f6';
+      const carCol = [dark ? '#3fd6cc' : '#0d9488', dark ? '#fbbf24' : '#d97706'];
+      if (imgDark !== dark) build(dark);
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.dist ? 0 : t < T.cars ? 1 : 2;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const narrow = W < 520;
+      const sweep = beat === 0 ? ease(ramp(t, SW0, SW1)) : 1;
+      const az = d.az1 - sweep * (d.az1 - d.az0); // current ray azimuth, degrees
+      const colsDone = Math.round(sweep * C);
+
+      // Layout: bird's-eye fan on the left, the front-view map on the right
+      const top = narrow ? 84 : 92;
+      const fanW = narrow ? 118 : 300;
+      const mapX0 = fanW + (narrow ? 14 : 36), mapW = W - mapX0 - (narrow ? 2 : 8);
+      const mapH = Math.min(H - top - 40, (mapW * R) / C * 2.2);
+      const mapY0 = top + (H - top - 30 - mapH) / 2;
+      const fanCx = fanW / 2 + 2, fanS = Math.min(fanW / (2 * d.rFan), (H - top - 30) / d.rFan);
+      const fanOy = top + d.rFan * fanS + 4; // sensor position in the fan
+      const fanP = (x: number, y: number) => [fanCx + x * fanS, fanOy - y * fanS] as const;
+
+      // Headline, titles, status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(narrow ? 'Top view' : "Bird's-eye view", fanCx, 46, fanW);
+      ctx.fillText(narrow ? `Front view ${R} × ${C}` : `Front view: ${R} rows × ${C} columns`, mapX0 + mapW / 2, 46, mapW);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 && sweep === 0 ? text : accent;
+      const leftNote = beat < 2 ? (narrow ? `azimuth ${Math.round(az)}°` : `ray at azimuth ${Math.round(az)}°`) : (narrow ? 'same size' : 'two cars, same size');
+      ctx.fillText(leftNote, fanCx, 64, fanW);
+      const cw = d.cars.map((c) => c.c[1] - c.c[0]);
+      const rightNote = beat === 0
+        ? (narrow ? `channel: height · ${colsDone} cols` : `channel: height · ${colsDone} / ${C} columns`)
+        : beat === 1
+          ? (narrow ? 'channel: distance' : `channel: distance · ${filled.toLocaleString('en-US')} pixels filled`)
+          : (narrow ? `${cw[0]} vs ${cw[1]} columns wide` : `${d.cars[0].d} m away: ${cw[0]} columns · ${d.cars[1].d} m away: ${cw[1]} columns`);
+      ctx.fillText(rightNote, mapX0 + mapW / 2, 64, mapW);
+
+      // Fan: sector outline, points (lit once the ray has passed them), the ray
+      const rad = (a: number) => (a * Math.PI) / 180;
+      ctx.globalAlpha = fadeAll * 0.5;
+      ctx.strokeStyle = faint;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(...fanP(0, 0));
+      ctx.arc(fanCx, fanOy, d.rFan * fanS, -rad(d.az1), -rad(d.az0));
+      ctx.closePath();
+      ctx.stroke();
+      for (let i = 0; i < nFan; i++) {
+        const x = fan[2 * i] / 5 - d.rFan, y = fan[2 * i + 1] / 10;
+        const a = (Math.atan2(y, x) * 180) / Math.PI;
+        if (a < d.az0 || a > d.az1) continue;
+        const passed = a >= az;
+        const [sx, sy] = fanP(x, y);
+        ctx.globalAlpha = fadeAll * (passed ? 0.85 : 0.3);
+        ctx.fillStyle = passed ? accent : faint;
+        ctx.fillRect(sx - 0.7, sy - 0.7, 1.4, 1.4);
+      }
+      ctx.globalAlpha = fadeAll;
+      ctx.fillStyle = heading;
+      ctx.beginPath(); ctx.arc(fanCx, fanOy, 3, 0, 2 * Math.PI); ctx.fill();
+      if (beat === 0 && sweep > 0 && sweep < 1) {
+        ctx.strokeStyle = red;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(...fanP(0, 0)); ctx.lineTo(...fanP(Math.cos(rad(az)) * d.rFan, Math.sin(rad(az)) * d.rFan)); ctx.stroke();
+      }
+      ctx.fillStyle = faint;
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillText('sensor', fanCx, fanOy + 14);
+
+      // Front-view map
+      ctx.globalAlpha = fadeAll;
+      ctx.fillStyle = cellBg;
+      ctx.fillRect(mapX0, mapY0, mapW, mapH);
+      ctx.imageSmoothingEnabled = false;
+      const cellW = mapW / C;
+      if (colsDone > 0) {
+        // Height channel up to the ray, cross-fading into the distance channel in beat 2
+        const toDist = beat === 0 ? 0 : ease(ramp(t, T.dist + 0.4, T.dist + 1.4));
+        ctx.globalAlpha = fadeAll * (1 - toDist);
+        ctx.drawImage(imgs[0], 0, 0, colsDone, R, mapX0, mapY0, colsDone * cellW, mapH);
+        ctx.globalAlpha = fadeAll * toDist;
+        ctx.drawImage(imgs[1], mapX0, mapY0, mapW, mapH);
+      }
+      if (beat === 0 && sweep > 0 && sweep < 1) {
+        ctx.globalAlpha = fadeAll;
+        ctx.fillStyle = red;
+        ctx.fillRect(mapX0 + colsDone * cellW - 1, mapY0 - 4, 2, mapH + 8);
+      }
+      // Axis labels: azimuth along the columns, elevation along the rows
+      ctx.globalAlpha = fadeAll;
+      ctx.fillStyle = faint;
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+      ctx.textAlign = 'left';
+      ctx.fillText(`${d.az1}°`, mapX0, mapY0 + mapH + 13);
+      ctx.textAlign = 'right';
+      ctx.fillText(`${d.az0}°`, mapX0 + mapW, mapY0 + mapH + 13);
+      ctx.textAlign = 'center';
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+      ctx.fillText(narrow ? 'c = atan2(y, x) / Δθ' : 'column c = ⌊atan2(y, x) / Δθ⌋, Δθ = 1° here', mapX0 + mapW / 2, mapY0 + mapH + 13, mapW - 70);
+      if (!narrow) ctx.fillText('row r = ⌊atan2(z, √(x² + y²)) / Δφ⌋', mapX0 + mapW / 2, mapY0 + mapH + 29, mapW);
+
+      // Beat 3: the two cars outlined in both views
+      if (beat === 2) {
+        d.cars.forEach((car, i) => {
+          const a = fadeAll * ease(ramp(t, T.cars + 0.5 + i * 1.2, T.cars + 1.1 + i * 1.2));
+          if (a <= 0) return;
+          ctx.globalAlpha = a;
+          ctx.strokeStyle = carCol[i];
+          ctx.lineWidth = 2;
+          ctx.strokeRect(mapX0 + car.c[0] * cellW, mapY0 + (car.r[0] * mapH) / R, (car.c[1] - car.c[0]) * cellW, ((car.r[1] - car.r[0]) * mapH) / R);
+          // Oriented box in the bird's-eye fan
+          const [cx, cy] = car.center, [w, l] = car.wl, c = Math.cos(car.yaw), s = Math.sin(car.yaw);
+          ctx.beginPath();
+          [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(([a1, b1], k) => {
+            const lx = (a1 * w) / 2, ly = (b1 * l) / 2;
+            const p = fanP(cx + lx * c - ly * s, cy + lx * s + ly * c);
+            k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]);
+          });
+          ctx.closePath();
+          ctx.stroke();
+          ctx.fillStyle = carCol[i];
+          ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+          ctx.textAlign = 'center';
+          const lab = `${car.d} m`;
+          const [tx, ty] = fanP(cx, cy + 2.2);
+          ctx.fillText(lab, tx, ty);
+          ctx.fillText(lab, mapX0 + ((car.c[0] + car.c[1]) / 2) * cellW, mapY0 + (car.r[0] * mapH) / R - 5);
+        });
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.end - 1); });
+    if (still) { frame(T.end - 1); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

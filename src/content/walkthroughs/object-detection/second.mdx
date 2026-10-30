@@ -1,0 +1,217 @@
+---
+title: "SECOND: skip the empty voxels"
+category: object-detection
+order: 4
+summary: "SECOND keeps VoxelNet's design but computes convolutions only where there are points, fixes the angle loss with a sine, and pastes ground-truth objects into training scenes — three changes that made voxel detectors fast and became defaults."
+date: 2026-10-30
+draft: true
+paper:
+  title: "SECOND: Sparsely Embedded Convolutional Detection"
+  authors: "Yan Yan, Yuxing Mao, Bo Li"
+  venue: "Sensors 2018, 18(10):3337"
+  links:
+    - name: MDPI (open access)
+      url: https://www.mdpi.com/1424-8220/18/10/3337
+---
+
+import Figure from '../../../components/walkthroughs/Figure.astro';
+import ArchitectureFigure from '../../../components/walkthroughs/second/ArchitectureFigure.astro';
+import SparseConvFigure from '../../../components/walkthroughs/second/SparseConvFigure.astro';
+import RuleTableFigure from '../../../components/walkthroughs/second/RuleTableFigure.astro';
+import SineLossFigure from '../../../components/walkthroughs/second/SineLossFigure.astro';
+import GtSamplingFigure from '../../../components/walkthroughs/second/GtSamplingFigure.astro';
+
+## Motivation & Main Contribution
+
+- **VoxelNet** works, but spends 170 of its 225 ms in dense 3D convolutions over a grid that is mostly empty.
+- SECOND keeps VoxelNet's pipeline — VFE → middle layers → RPN — and changes what is slow or awkward.
+- **Main contributions:**
+  - **Sparse convolution** for the middle layers, with a **GPU rule-generation** algorithm that makes it fast.
+  - A **sine-error angle loss** plus a **direction classifier**, so a box flipped by $\pi$ is not punished as a total miss.
+  - **Ground-truth sampling**: paste objects from a database into training scenes.
+- Reading tip: sparse 3D convolution and GT-sampling are still in almost every voxel-based codebase.
+
+## Challenges at the Time
+
+- **Cost of dense 3D CNNs** grows cubically with voxel resolution, yet a KITTI frame gives only **5k–8k non-empty voxels**,
+  a sparsity of about **0.005**.
+- **Existing sparse convolution** (SparseConvNet) generated its index rules on the CPU with a hash table — slow, and it
+  needs CPU–GPU transfers.
+- **Angle regression:** VoxelNet regresses $\theta^g - \theta^a$ directly, so $0$ and $\pi$ — the same box — give a large loss.
+  Corner encoding (MV3D) cannot tell the heading; vector encoding (AVOD) is redundant.
+- **Too few positives:** ~70k anchors per frame, but each ground-truth object gives only 4–6 positive anchors.
+
+## Naive Questions
+
+- **If most voxels are empty, why not just drop them?**
+  Dense convolution cannot drop them; sparse convolution stores only active sites and computes only outputs that touch them.
+- **What is a submanifold convolution?**
+  A sparse convolution whose output is active only where the input is active, so the active set does not grow layer by layer.
+- **Why a sine in the angle loss?**
+  $\sin(\theta_p - \theta_t)$ is zero both for the correct angle and for one off by $\pi$ — the same box.
+- **Then how does the network know which way the car faces?**
+  A separate softmax direction classifier: is the ground-truth yaw above zero or not?
+- **Isn't pasting objects from other scenes cheating?**
+  No: a collision test removes impossible placements; it simply shows the network more positives per frame.
+- **How much faster is it?**
+  About 4× faster training and 3× faster inference than the dense version; 0.05 s per frame for the large model.
+
+## Key Idea
+
+> **Key idea.** Compute 3D convolutions only at occupied voxels, using precomputed gather–GEMM–scatter rules,
+> and make the angle loss blind to a $\pi$ flip.
+
+Sparse convolution as a sum over kernel offsets $k$:
+
+$$
+Y'_{j,m} = \sum_{k} \sum_{l} W_{k,l,m}\, \tilde D'_{R_{k,j},\,k,\,l}
+$$
+
+- $Y'_{j,m}$: output channel $m$ at active output site $j$; $D'$: features of the active input sites.
+- $W_{k,l,m}$: kernel weight at offset $k$, from input channel $l$ to output channel $m$.
+- $R_{k,j}$ (the **rule**): which input site feeds output $j$ through offset $k$. For each $k$: gather the inputs,
+  one GEMM, scatter-add to the outputs.
+
+Angle loss:
+
+$$
+L_\theta = \operatorname{SmoothL1}\big(\sin(\theta_p - \theta_t)\big)
+$$
+
+## Dive into Model Architecture & Key Components
+
+<Figure>
+  <ArchitectureFigure />
+  <span slot="caption">SECOND end to end (after Fig. 1 of the paper), stage by stage, with the tensor shapes of the large car model: VoxelNet's pipeline, with sparse 3D convolutions in the middle and a direction head added.</span>
+</Figure>
+
+### SECOND, step by step (large car network)
+
+Range $[-3, 1] \times [-40, 40] \times [0, 70.4]$ m ($z \times y \times x$), voxel $0.4 \times 0.2 \times 0.2$ m,
+$T = 35$ (Sections 3.1.1 and 3.2.4):
+
+| Stage | Operation | Shape |
+|---|---|---|
+| Input | points in the detection range | $n \times 4$ $(x, y, z, r)$ |
+| Voxelization | hash-table grouping (as in VoxelNet) | 5k–8k non-empty voxels |
+| VFE(32), VFE(128), Linear(128) | voxel feature extractor | $128$ per voxel |
+| Sparse tensor | | $128 \times 10 \times 400 \times 352$ (sparse) |
+| Sparse middle extractor | 2 phases: submanifold convs + one sparse conv with stride $(2,1,1)$ | $64 \times 2 \times 400 \times 352$ |
+| To dense, reshape | | $128 \times 400 \times 352$ |
+| RPN stage 1 | 3 × Conv2D(128, 3), first stride 2 | $128 \times 200 \times 176$ |
+| RPN stage 2 | 5 × Conv2D(128, 3), first stride 2 | $128 \times 100 \times 88$ |
+| RPN stage 3 | 5 × Conv2D(256, 3), first stride 2 | $256 \times 50 \times 44$ |
+| Upsample + concat | DeConv2D(128, 3, $s$), $s = 1, 2, 4$ | $384 \times 200 \times 176$ |
+| Heads | three $1 \times 1$ convs | class, box (7 per anchor), direction |
+
+RPN spatial sizes follow from the stated strides.
+**Small model:** VFE(32), VFE(64), range $[-3, 1] \times [-32, 32] \times [0, 52.8]$ m → $128 \times 10 \times 320 \times 264$.
+
+> **Builds on.** VoxelNet's voxelization, VFE layers, anchors and RPN ([walkthrough 03](/walkthroughs/object-detection/voxelnet/)).
+
+### Sparse convolution and GPU rule generation
+
+- Dense: im2col gathers a $k^3$ neighbourhood for every output site, then one GEMM. On sparse data that matrix is mostly zeros.
+- SECOND instead builds a **rule table** of size $K \times N_{in} \times 2$ ($K$: kernel volume): for each offset, pairs of
+  (input index, output index). Gather → GEMM → scatter-add, once per offset.
+
+<Figure>
+  <RuleTableFigure />
+  <span slot="caption">Sparse convolution as gather–GEMM–scatter, on a toy 2D example (6 active sites, $3 \times 3$ submanifold kernel, $C_{in} = 3$, $C_{out} = 2$). The rule table lists, per kernel offset $k$, which input feeds which output; each offset then costs one small matrix product over exactly those pairs, instead of a dense im2col over every cell.</span>
+</Figure>
+
+- **Rule generation on the GPU** (Algorithm 1):
+  1. For every input site and kernel offset, record the output spatial index (duplicates allowed).
+  2. Run a parallel **unique** to get the output sites and their indices; build a dense lookup buffer.
+  3. Look up each rule's output index in the buffer.
+- Middle extractor: **submanifold** convs keep the active set fixed; one **regular sparse** conv per phase downsamples $z$.
+
+<Figure>
+  <SparseConvFigure />
+  <span slot="caption">Regular vs submanifold sparse convolution, in 2D on the real bird's-eye occupancy of a parked car ($0.4$ m cells, $3 \times 3$ kernel). A regular sparse conv activates every cell its kernel touches, so the active set dilates layer after layer; a submanifold conv keeps it fixed. SECOND therefore uses submanifold layers, plus one regular sparse conv per phase to downsample.</span>
+</Figure>
+
+- Speed (Table 1, one sparse conv layer, 64 → 64 channels, lower is faster): 8.6 for SECOND vs 21.2 for SparseConvNet vs 567 dense.
+
+> **Builds on.** Spatially sparse convolution and submanifold sparse convolution from SparseConvNet (Graham et al.); SECOND's contribution is the GPU rule generation.
+
+### Sine-error loss and the direction classifier
+
+- Box encoding as in VoxelNet: $x_t = (x_g - x_a)/d_a$, $y_t = (y_g - y_a)/d_a$, $z_t = (z_g - z_a)/h_a$,
+  $\log$ size ratios, $\theta_t = \theta_g - \theta_a$, with $d_a = \sqrt{l_a^2 + w_a^2}$.
+- Apply $\sin(\cdot)$ to the angle difference before Smooth $\ell_1$:
+  1. a $\pi$ flip costs nothing;
+  2. the loss grows with the angle error like the IoU drop does.
+- The lost heading comes back from a softmax **direction classifier** (target: ground-truth yaw > 0).
+
+<Figure>
+  <SineLossFigure />
+  <span slot="caption">A predicted car box ($1.6 \times 3.9$ m) turning away from the ground truth. The direct loss (Smooth $\ell_1$ with $\beta = 1$ on $\Delta\theta$) is largest exactly when the box is flipped onto the same footprint; the sine loss returns to zero and tracks $1 - $ BEV IoU (dashed, computed for these boxes). The direction classifier then picks between the two headings.</span>
+</Figure>
+
+- Table 6 (val, car 3D AP): vector encoding 85.99 / 74.79 / 67.82 vs sine + direction **87.43 / 76.48 / 69.10**.
+
+### Ground-truth sampling
+
+- Offline: build a **database** of every training GT box with the points inside it.
+- Online: sample several objects, **concatenate** their points into the current cloud, drop those that collide.
+- Result: more positives per frame, much faster convergence and a better final AP (Fig. 7, car moderate, val).
+
+<Figure>
+  <GtSamplingFigure />
+  <span slot="caption">Ground-truth sampling on a real scan. Here the database holds only this scan's five labelled cars (in training it holds every object of the training set), and the paste spots are chosen by hand on the empty road. A sample whose box overlaps an existing box is removed, so the scene stays physically possible while gaining extra positives.</span>
+</Figure>
+
+### Loss and other training details
+
+- **Focal loss** for classification, $FL(p_t) = -\alpha_t (1 - p_t)^\gamma \log p_t$, with $\alpha = 0.25$, $\gamma = 2$.
+- Total: $L = \beta_1 L_{cls} + \beta_2 (L_{reg\text{-}\theta} + L_{reg\text{-}other}) + \beta_3 L_{dir}$,
+  with $\beta_1 = 1.0$, $\beta_2 = 2.0$, $\beta_3 = 0.2$.
+- **Anchors** as VoxelNet: car $w \times l \times h = 1.6 \times 3.9 \times 1.56$ m at $z = -1.0$; IoU thresholds 0.6 / 0.45
+  (pedestrian, cyclist: 0.5 / 0.35).
+- **Augmentation:** per-object rotation $U[-\pi/2, \pi/2]$ and $\mathcal{N}(0, 1)$ translation; global scaling
+  $U[0.95, 1.05]$ and rotation $U[-\pi/4, \pi/4]$.
+- Adam, learning rate $2 \times 10^{-4}$, decay 0.8 every 15 epochs, 160 epochs; 19 h on one GTX 1080 Ti (large car model).
+
+> **Builds on.** The focal loss of RetinaNet; VoxelNet's box encoding, anchors and per-box / global augmentation.
+
+## Conclusion
+
+### Results
+
+KITTI test, car 3D AP (Table 2 of the paper; AVOD and AVOD-FPN use a custom 85/15 split and ground-plane estimation):
+
+| Method | Data | Time (s) <span class="better-down">↓</span> | Easy <span class="better-up">↑</span> | Moderate <span class="better-up">↑</span> | Hard <span class="better-up">↑</span> |
+|---|---|---|---|---|---|
+| MV3D | LiDAR + image | 0.36 | 71.09 | 62.35 | 55.12 |
+| MV3D (LiDAR) | LiDAR | 0.24 | 66.77 | 52.73 | 51.31 |
+| F-PointNet | LiDAR + image | 0.17 | 81.20 | 70.39 | 62.19 |
+| AVOD | LiDAR + image | 0.08 | 73.59 | 65.78 | 58.38 |
+| AVOD-FPN | LiDAR + image | 0.1 | 81.94 | 71.88 | **66.38** |
+| VoxelNet | LiDAR | 0.23 | 77.47 | 65.11 | 57.73 |
+| **SECOND** | LiDAR | **0.05** | **83.13** | **73.66** | 66.20 |
+
+- **KITTI test, car BEV AP** (Table 3): 88.07 / 79.37 / 77.95 — about level with VoxelNet, below the fusion methods.
+- **Validation, car 3D AP** (Table 4): large 87.43 / 76.48 / 69.10; **small 85.50 / 75.04 / 68.78 at 0.025 s** (40 fps).
+- **Angle encoding** (Table 6, val, car 3D AP): vector encoding 85.99 / 74.79 / 67.82 vs sine + direction **87.43 / 76.48 / 69.10**.
+- **Speed:** ~4× faster training and ~3× faster inference than the dense equivalent (Section 1).
+
+### Pros and Cons
+
+- **Pros**
+  - Sparse + submanifold convolution turns the 3D middle layers from the bottleneck into a small cost.
+  - The sine loss respects the $\pi$ symmetry of a box; the direction classifier recovers the heading.
+  - GT-sampling fixes the shortage of positives and speeds up convergence; it became a standard augmentation.
+- **Cons**
+  - Still a 3D middle layer: PointPillars measures 48 ms for the encoder in SECOND's open-source code.
+  - Pedestrians, cyclists and BEV AP lag behind the best fusion methods (the authors' own conclusion).
+
+### Future Work
+
+- Remove the 3D convolutions altogether for real-time speed.
+- Improve pedestrian / cyclist detection and BEV localisation.
+
+### Next
+
+- [**PointPillars**](/walkthroughs/object-detection/pointpillars/) drops the height axis: pillars, a one-layer PointNet
+  and a pseudo-image, so the detector needs only 2D convolutions — and keeps SECOND's losses and GT-sampling.

@@ -1,0 +1,242 @@
+---
+// "Objects as centre points" on the real scan, BEV. Beat 1: the backbone's BEV feature map (cells shaded by the
+// points they contain). Beat 2: the heatmap head renders one Gaussian per object centre (radius τ = 2 cells).
+// Beat 3: peaks are local maxima — greater than their 8 neighbours — one per object. Beat 4: every regression
+// map is read at the peak (offset, height, size, heading; velocity is covered in the tracking figure) → a box.
+// The 0.8 m cell is chosen for the illustration; the heatmap is the training target, rendered from the boxes.
+import { cropScene, loadScene, bevBox } from '../../../lib/walkthroughFiguresB';
+
+const X0 = -14.4, X1 = 16, Y0 = -7.2, Y1 = 10.4, CELL = 0.8;
+const NX = Math.round((X1 - X0) / CELL), NY = Math.round((Y1 - Y0) / CELL);
+const r2 = (v: number) => Math.round(v * 100) / 100;
+const all = cropScene(X0, X1, Y0, Y1, 100000, { ground: false });
+const occ = new Array(NX * NY).fill(0);
+for (const p of all) {
+  const i = Math.floor((p[0] - X0) / CELL), j = Math.floor((p[1] - Y0) / CELL);
+  if (i >= 0 && i < NX && j >= 0 && j < NY) occ[j * NX + i]++;
+}
+const feat = occ.map((n) => Math.round(Math.min(1, Math.log1p(n) / Math.log1p(60)) * 100) / 100);
+const disp = all.filter((_, k) => k % 8 === 0).flatMap((p) => [Math.round(p[0] * 100), Math.round(p[1] * 100)]);
+const boxes = loadScene().boxes.map(bevBox).filter((b) => b.x > X0 && b.x < X1 && b.y > Y0 && b.y < Y1)
+  .map((b) => ({ ...b, ci: Math.floor((b.x - X0) / CELL), cj: Math.floor((b.y - Y0) / CELL) }));
+// Gaussian heatmap target: radius τ = 2 cells, σ = (2r + 1) / 6 as in CenterNet
+const R = 2, sigma = (2 * R + 1) / 6;
+const heat = new Array(NX * NY).fill(0);
+for (const b of boxes) for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+  const g = Math.exp(-((i - b.ci) ** 2 + (j - b.cj) ** 2) / (2 * sigma * sigma));
+  heat[j * NX + i] = Math.max(heat[j * NX + i], g < 0.01 ? 0 : Math.round(g * 100) / 100);
+}
+const focus = boxes.findIndex((b) => b.y < 0); // the car on the road
+const objs = boxes.map((b) => ({ x: b.x, y: b.y, l: b.l, w: b.w, h: b.h, z: b.z, hz: b.hz, ci: b.ci, cj: b.cj,
+  off: [r2((b.x - X0) / CELL - b.ci), r2((b.y - Y0) / CELL - b.cj)] }));
+const data = { range: [X0, Y0, CELL, NX, NY], feat, heat, disp, objs, focus };
+---
+<canvas class="wt-canvas cpheat-canvas" data-cpheat={JSON.stringify(data)}
+  role="img" aria-label="CenterPoint on a real LiDAR scan in bird's-eye view: the backbone gives a BEV feature map, the heatmap head puts one Gaussian peak at each object centre, local maxima give one peak per object, and the regression maps read at each peak give offset, height, size and heading — a full 3D box"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  import { iconPalette, drawBlock } from '../../../lib/figureIcons';
+  type Obj = { x: number; y: number; l: number; w: number; h: number; z: number; hz: number; ci: number; cj: number; off: number[] };
+  type Data = { range: number[]; feat: number[]; heat: number[]; disp: number[]; objs: Obj[]; focus: number };
+
+  const HEADLINE = [
+    'The backbone turns the scan into a BEV feature map',
+    'The heatmap head: a Gaussian peak at every object centre',
+    'Peaks: cells greater than their 8 neighbours, one per object',
+    'Read every regression map at the peak: a full 3D box',
+  ];
+  const HEADLINE_SHORT = [
+    'Backbone → BEV feature map',
+    'Heatmap: a peak at each centre',
+    'Local maxima: one per object',
+    'Regression maps at the peak → box',
+  ];
+
+  document.querySelectorAll<HTMLCanvasElement>('.cpheat-canvas').forEach((canvas) => {
+    const d: Data = JSON.parse(canvas.dataset.cpheat!);
+    const ctx = canvas.getContext('2d')!;
+    const [X0, Y0, CELL, NX, NY] = d.range;
+    const X1 = X0 + NX * CELL, Y1 = Y0 + NY * CELL;
+    const f = d.objs[d.focus];
+
+    // Beats: BEV map · heatmap · peaks · regression
+    const T = { bev: 0, heat: 4.0, peak: 9.0, reg: 13.5, end: 21.5 };
+    const BEATS = [T.bev, T.heat, T.peak, T.reg];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    const rowAt = (k: number) => T.reg + 0.6 + k * 0.9; // regression row k read at the focus peak
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const teal = css.getPropertyValue('--accent-3').trim() || '#0ea5a0';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const neutral = dark ? '#5d6879' : '#a3adbb';
+      ctx.clearRect(0, 0, W, H);
+      const pal = iconPalette();
+
+      const beat = t < T.heat ? 0 : t < T.peak ? 1 : t < T.reg ? 2 : 3;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+
+      // Layout: BEV map on the left, the regression heads on the right
+      const narrow = W < 520;
+      const panelW = narrow ? 104 : 200;
+      const px0 = W - panelW - (narrow ? 4 : 20);
+      const top = 80;
+      const S = Math.min((px0 - (narrow ? 4 : 16)) / (X1 - X0), (H - top - 6) / (Y1 - Y0));
+      const ox = (px0 - S * (X1 - X0)) / 2, oy = top + (H - top - S * (Y1 - Y0)) / 2;
+      const mx = (x: number) => ox + (x - X0) * S, my = (y: number) => oy + (Y1 - y) * S;
+      const cs = CELL * S;
+      const viewCx = px0 / 2;
+
+      // Headline, titles and status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(narrow ? 'BEV map' : 'Bird’s-eye view map', viewCx, 42);
+      ctx.fillText(narrow ? 'Heads' : 'Read at the peak', px0 + panelW / 2, 42, panelW + 10);
+      const note = narrow
+        ? ['W × L × F features', 'K channels (here: car)', `${d.objs.length} peaks`, 'box at each peak'][beat]
+        : ['M ∈ ℝ^(W × L × F)', 'heatmap Ŷ, one channel per class (here: car)', `${d.objs.length} peaks → ${d.objs.length} objects, no anchors`, 'one box per peak, no orientation to match'][beat];
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(note, viewCx, 60, px0 - 4);
+
+      // Cells: feature map (grey) cross-fading into the heatmap (orange → red)
+      const heatOn = beat >= 1 ? ease(ramp(t, T.heat + 0.3, T.heat + 1.5)) : 0;
+      for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+        const k = j * NX + i, fv = d.feat[k], hv = d.heat[k];
+        const x = mx(X0 + i * CELL), y = my(Y0 + (j + 1) * CELL);
+        if (fv > 0) {
+          ctx.globalAlpha = fadeAll * ease(ramp(t, 0.2, 1.0)) * fv * (dark ? 0.55 : 0.4) * (1 - 0.6 * heatOn);
+          ctx.fillStyle = dark ? '#8b97ab' : '#64748b';
+          ctx.fillRect(x + 0.5, y + 0.5, cs - 1, cs - 1);
+        }
+        if (hv > 0 && heatOn > 0) {
+          ctx.globalAlpha = fadeAll * heatOn * (0.25 + 0.75 * hv);
+          ctx.fillStyle = `hsl(${40 - 38 * hv} 95% ${dark ? 60 - 8 * hv : 58 - 12 * hv}%)`;
+          ctx.fillRect(x + 0.5, y + 0.5, cs - 1, cs - 1);
+        }
+      }
+      // Points on top, faint
+      ctx.globalAlpha = fadeAll * (0.55 - 0.3 * heatOn);
+      ctx.fillStyle = neutral;
+      for (let i = 0; i < d.disp.length; i += 2) ctx.fillRect(mx(d.disp[i] / 100) - 0.6, my(d.disp[i + 1] / 100) - 0.6, 1.2, 1.2);
+
+      // Peaks: a 3 × 3 neighbourhood outline, then the peak cell
+      const cellXY = (o: Obj) => [mx(X0 + o.ci * CELL), my(Y0 + (o.cj + 1) * CELL)] as const;
+      if (beat >= 2) {
+        d.objs.forEach((o, n) => {
+          const on = ease(ramp(t, T.peak + 0.5 + n * 0.5, T.peak + 0.9 + n * 0.5));
+          if (on <= 0) return;
+          const [x, y] = cellXY(o);
+          ctx.globalAlpha = fadeAll * on * (beat === 2 ? 0.9 : 0.4);
+          ctx.strokeStyle = heading; ctx.lineWidth = 1; ctx.setLineDash([3, 2]);
+          ctx.strokeRect(x - cs, y - cs, 3 * cs, 3 * cs);
+          ctx.setLineDash([]);
+          ctx.globalAlpha = fadeAll * on;
+          ctx.strokeStyle = dark ? '#ffffff' : '#111827'; ctx.lineWidth = 2;
+          ctx.strokeRect(x, y, cs, cs);
+        });
+      }
+
+      // Beat 4: the focus peak's offset, then the box (with heading); the other peaks follow
+      const boxPath = (o: Obj) => {
+        const c = Math.cos(o.h), s = Math.sin(o.h);
+        ctx.beginPath();
+        [[1, 1], [1, -1], [-1, -1], [-1, 1]].forEach(([p, q], k) => {
+          const x = o.x + (p * o.l / 2) * c - (q * o.w / 2) * s, y = o.y + (p * o.l / 2) * s + (q * o.w / 2) * c;
+          if (k === 0) ctx.moveTo(mx(x), my(y)); else ctx.lineTo(mx(x), my(y));
+        });
+        ctx.closePath();
+      };
+      if (beat === 3) {
+        const [x, y] = cellXY(f);
+        const offOn = ease(ramp(t, rowAt(0), rowAt(0) + 0.6));
+        ctx.globalAlpha = fadeAll * offOn;
+        ctx.strokeStyle = red; ctx.fillStyle = red; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(x, y + cs); ctx.lineTo(mx(f.x), my(f.y)); ctx.stroke();
+        ctx.beginPath(); ctx.arc(mx(f.x), my(f.y), 3, 0, Math.PI * 2); ctx.fill();
+        d.objs.forEach((o, n) => {
+          const on = n === d.focus ? ease(ramp(t, rowAt(2), rowAt(2) + 0.6)) : ease(ramp(t, rowAt(4) + 0.6 + n * 0.3, rowAt(4) + 1.0 + n * 0.3));
+          if (on <= 0) return;
+          ctx.globalAlpha = fadeAll * on;
+          ctx.strokeStyle = teal; ctx.lineWidth = 2;
+          boxPath(o); ctx.stroke();
+          // Heading tick
+          const hOn = n === d.focus ? ease(ramp(t, rowAt(3), rowAt(3) + 0.5)) : on;
+          ctx.globalAlpha = fadeAll * hOn;
+          ctx.beginPath(); ctx.moveTo(mx(o.x), my(o.y));
+          ctx.lineTo(mx(o.x + (o.l / 2) * Math.cos(o.h)), my(o.y + (o.l / 2) * Math.sin(o.h))); ctx.stroke();
+        });
+      }
+
+      // Panel: the regression heads, with the value read at the focus peak
+      const sgn = (v: number) => (v >= 0 ? '' : '−') + Math.abs(v).toFixed(2);
+      const rows = [
+        { k: 'offset (2)', v: `${f.off[0].toFixed(2)}, ${f.off[1].toFixed(2)} cell`, vs: `${f.off[0].toFixed(1)}, ${f.off[1].toFixed(1)}` },
+        { k: 'height (1)', v: `${f.z.toFixed(2)} m`, vs: `${f.z.toFixed(1)} m` },
+        { k: 'size (3)', v: `${f.l} × ${f.w} × ${f.hz} m`, vs: `${f.l.toFixed(1)}×${f.w.toFixed(1)}×${f.hz.toFixed(1)}` },
+        { k: 'heading (2)', v: `sin ${sgn(Math.sin(f.h))}, cos ${sgn(Math.cos(f.h))}`, vs: `${sgn(Math.sin(f.h))}, ${sgn(Math.cos(f.h))}` },
+        { k: 'velocity (2)', v: 'needs the previous frame', vs: 'see tracking' },
+      ];
+      const x0 = px0 + (narrow ? 2 : 10);
+      // The block that runs in this beat: backbone, heatmap head, regression heads
+      const bkH = narrow ? 26 : 34, bkW = narrow ? 40 : 54;
+      const bk = beat === 0 ? { kind: 'conv3d' as const, label: narrow ? 'backbone' : '3D backbone' }
+        : beat <= 2 ? { kind: 'conv2d' as const, label: narrow ? 'heatmap' : 'heatmap head' } : { kind: 'conv2d' as const, label: narrow ? 'regression' : 'regression heads' };
+      drawBlock(ctx, bk.kind, px0 + (panelW - bkW) / 2, top - 4, bkW, bkH, pal,
+        { label: bk.label, active: ease(ramp(t, BEATS[beat] + 0.2, BEATS[beat] + 1.0)) * (beat === 2 ? 0.4 : 1), alpha: fadeAll, compact: narrow });
+      const rowsTop = top + bkH + (narrow ? 14 : 18);
+      const rowH = (H - rowsTop - 2) / rows.length;
+      ctx.textAlign = 'left';
+      rows.forEach((r, k) => {
+        const y = rowsTop + 10 + k * rowH;
+        const on = beat === 3 && t >= rowAt(k);
+        ctx.globalAlpha = fadeAll * (beat === 3 ? (on ? 1 : 0.4) : 0.4);
+        ctx.font = `500 ${narrow ? 10 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = faint;
+        ctx.fillText(r.k, x0, y, panelW);
+        ctx.font = `600 ${narrow ? 10 : 13}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = on ? (t < rowAt(k + 1) ? accent : text) : faint;
+        ctx.fillText(on ? (narrow ? r.vs : r.v) : '?', x0, y + (narrow ? 15 : 18), panelW - 4);
+      });
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.end - 1); });
+    if (still) { frame(T.end - 1); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

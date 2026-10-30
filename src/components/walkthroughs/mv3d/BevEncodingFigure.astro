@@ -1,0 +1,289 @@
+---
+// MV3D's bird's-eye-view encoding, on a real 13 m × 7 m patch of the PandaSet scan (two parked cars and a wall).
+// Beat 1 shows the patch from the side and cuts it into M = 4 equal height slices; beat 2 turns each slice into a
+// max-height map on a 0.1 m grid (one channel each); beat 3 adds the density channel min(1, log(N+1)/log 64) and
+// the intensity channel (not stored in this scan) → an (M + 2)-channel image for a 2D CNN.
+// Every point of the patch is embedded as 3 bytes (x and y cell index at 0.1 m, z in 2.5 cm steps).
+import { loadScene, packBytes } from '../../../lib/walkthroughFiguresA';
+
+const X0 = 2.5, Y0 = 3.5, NX = 130, NY = 70, Z0 = -0.5, ZQ = 40;
+const bytes: number[] = [];
+for (const p of loadScene().points) {
+  const ix = Math.floor((p.x - X0) / 0.1), iy = Math.floor((p.y - Y0) / 0.1);
+  if (ix < 0 || ix >= NX || iy < 0 || iy >= NY || p.z > 5.8) continue;
+  bytes.push(ix, iy, (p.z - Z0) * ZQ);
+}
+const data = { nx: NX, ny: NY, z0: Z0, zq: ZQ, pts: packBytes(bytes) };
+---
+<canvas class="wt-canvas bev-enc-canvas" data-bev={JSON.stringify(data)}
+  role="img" aria-label="A patch of a LiDAR scan is cut into four height slices; each slice becomes a max-height map on a 0.1 m grid, and a density and an intensity map are added, giving an image with M plus 2 channels"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  type Bev = { nx: number; ny: number; z0: number; zq: number; pts: string };
+
+  const M = 4, ZLO = 0, ZHI = 3.2, DZ = (ZHI - ZLO) / M; // the slices drawn here (the paper leaves M and the range open)
+  const HEADLINE = [
+    'Cut the point cloud into M horizontal slices',
+    'Each slice becomes a max-height map on a 0.1 m grid',
+    'Add density and intensity: an (M + 2)-channel image',
+  ];
+  const HEADLINE_SHORT = ['Cut the cloud into M height slices', 'Each slice → a max-height map', 'Add density + intensity: M + 2 channels'];
+  const HUE = [205, 160, 38, 330]; // one hue per slice
+
+  document.querySelectorAll<HTMLCanvasElement>('.bev-enc-canvas').forEach((canvas) => {
+    const d: Bev = JSON.parse(canvas.dataset.bev!);
+    const ctx = canvas.getContext('2d')!;
+    const raw = Uint8Array.from(atob(d.pts), (c) => c.charCodeAt(0));
+    const n = raw.length / 3, NX = d.nx, NY = d.ny;
+    const px = new Float32Array(n), py = new Float32Array(n), pz = new Float32Array(n);
+    for (let i = 0; i < n; i++) { px[i] = (raw[3 * i] + 0.5) * 0.1; py[i] = (raw[3 * i + 1] + 0.5) * 0.1; pz[i] = raw[3 * i + 2] / d.zq + d.z0; }
+    const sliceOf = (z: number) => (z < ZLO ? 0 : z >= ZHI ? -1 : Math.floor((z - ZLO) / DZ));
+
+    // Channels, computed here from the points: M max-height maps and the point count per cell
+    const hmap = Array.from({ length: M }, () => new Float32Array(NX * NY).fill(-1));
+    const count = new Uint16Array(NX * NY);
+    for (let i = 0; i < n; i++) {
+      const c = raw[3 * i + 1] * NX + raw[3 * i];
+      count[c]++;
+      const k = sliceOf(pz[i]);
+      if (k >= 0) hmap[k][c] = Math.max(hmap[k][c], pz[i]);
+    }
+    const occupied = hmap.map((h) => h.reduce((s, v) => s + (v > -1 ? 1 : 0), 0));
+    const densCells = count.reduce((s, v) => s + (v ? 1 : 0), 0);
+
+    // Each channel is drawn once into a small offscreen image (rebuilt when the theme changes)
+    let imgDark: boolean | null = null;
+    const imgs: HTMLCanvasElement[] = [];
+    const buildImages = (dark: boolean) => {
+      imgDark = dark;
+      imgs.length = 0;
+      for (let k = 0; k <= M; k++) {
+        const c = document.createElement('canvas');
+        c.width = NX; c.height = NY;
+        const g = c.getContext('2d')!;
+        const im = g.createImageData(NX, NY);
+        for (let iy = 0; iy < NY; iy++) for (let ix = 0; ix < NX; ix++) {
+          const cell = iy * NX + ix, o = ((NY - 1 - iy) * NX + ix) * 4;
+          let hue = 0, f = -1;
+          if (k < M) { if (hmap[k][cell] > -1) { hue = HUE[k]; f = Math.min(1, Math.max(0, (hmap[k][cell] - (ZLO + k * DZ)) / DZ)); } }
+          else if (count[cell]) { hue = 0; f = Math.min(1, Math.log(count[cell] + 1) / Math.log(64)); }
+          if (f < 0) continue;
+          const [r, gg, b] = hsl(hue, 75, dark ? 30 + f * 40 : 78 - f * 42);
+          im.data[o] = r; im.data[o + 1] = gg; im.data[o + 2] = b; im.data[o + 3] = 255;
+        }
+        g.putImageData(im, 0, 0);
+        imgs.push(c);
+      }
+    };
+    function hsl(h: number, s: number, l: number) {
+      s /= 100; l /= 100;
+      const f = (m: number) => { const k = (m + h / 30) % 12; return 255 * (l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1))); };
+      return [f(0), f(8), f(4)];
+    }
+
+    // Beats: side view + slices · one max-height map per slice · density + intensity
+    const T = { side: 0, maps: 6, dens: 16, end: 24 };
+    const BEATS = [T.side, T.maps, T.dens];
+    const SLICE_DT = 2.5;
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const cellBg = dark ? '#1a2232' : '#eef1f6';
+      if (imgDark !== dark) buildImages(dark);
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.maps ? 0 : t < T.dens ? 1 : 2;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const narrow = W < 520;
+      const sliceNow = beat === 1 ? Math.min(M - 1, Math.floor((t - T.maps - 0.6) / SLICE_DT)) : -1;
+
+      // Layout: main panel on the left, the growing channel stack (2 × 3 thumbnails) on the right
+      const tw = narrow ? 46 : 74, th = (tw * NY) / NX, gap = narrow ? 5 : 8;
+      const stackW = 2 * tw + gap, sx0 = W - stackW - (narrow ? 2 : 12);
+      const top = narrow ? 88 : 92;
+      const pw = sx0 - (narrow ? 14 : 34), mainCx = pw / 2 + 2;
+
+      // Headline, titles, status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      const mainTitle = beat === 0 ? (narrow ? 'Side view' : 'Side view (x, z)') : beat === 1 ? (narrow ? `Slice ${Math.max(0, sliceNow) + 1}, top` : `Slice ${Math.max(0, sliceNow) + 1}, seen from the top`) : narrow ? 'Density' : 'Density channel';
+      ctx.fillText(mainTitle, mainCx, 46, pw);
+      ctx.fillText('BEV channels', sx0 + stackW / 2, 46, stackW + 10);
+      const nCh = beat === 0 ? 0 : beat === 1 ? Math.max(0, sliceNow + 1) : t > T.dens + 3 ? M + 2 : t > T.dens + 0.8 ? M + 1 : M;
+      const k = Math.max(0, sliceNow);
+      const mainNote = beat === 0
+        ? (narrow ? `${M} slices of ${DZ.toFixed(1)} m` : `${n.toLocaleString('en-US')} points, ${M} equal slices of ${DZ.toFixed(1)} m`)
+        : beat === 1
+          ? (narrow ? `max z per cell · ${occupied[k]} cells` : `max height per cell · ${occupied[k]} cells filled`)
+          : (narrow ? 'min(1, log(N+1) / log 64)' : `min(1, log(N + 1) / log 64) · ${densCells} cells`);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(mainNote, mainCx, 64, pw);
+      ctx.fillStyle = nCh ? accent : text;
+      ctx.fillText(nCh === M + 2 ? `M + 2 = ${M + 2} channels` : `${nCh} channel${nCh === 1 ? '' : 's'}`, sx0 + stackW / 2, 64, stackW + 10);
+
+      // Main panel geometry: 13 m × 7 m patch
+      const LX = NX * 0.1, LY = NY * 0.1, ZTOP = 3.6;
+      const ph = H - top - 22;
+      const lab = narrow ? 12 : 48; // room for the slice labels
+      const sSide = Math.min((pw - lab - 4) / LX, ph / (ZTOP + 0.4));
+      const sTop = Math.min((pw - 10) / LX, ph / LY);
+      const sideX0 = mainCx + lab / 2 - (LX * sSide) / 2, sideY0 = top + (ph + (ZTOP + 0.4) * sSide) / 2 - 0.4 * sSide; // z = 0 line
+      const topX0 = mainCx - (LX * sTop) / 2, topY0 = top + (ph - LY * sTop) / 2;
+      const sideP = (x: number, z: number) => [sideX0 + x * sSide, sideY0 - z * sSide] as const;
+
+      // Beat 1 (and the fade into beat 2): the patch from the side, slice bands and points tinted by slice
+      const sideA = beat === 0 ? 1 : 1 - ramp(t, T.maps, T.maps + 0.6);
+      if (sideA > 0) {
+        const bands = ease(ramp(t, 1.4, 2.6));
+        for (let s = 0; s < M; s++) {
+          const a = ease(ramp(t, 1.4 + s * 0.5, 2.0 + s * 0.5));
+          const [, yb] = sideP(0, ZLO + s * DZ), [, yt] = sideP(0, ZLO + (s + 1) * DZ);
+          ctx.globalAlpha = fadeAll * sideA * a * (dark ? 0.16 : 0.12);
+          ctx.fillStyle = `hsl(${HUE[s]} 70% 50%)`;
+          ctx.fillRect(sideX0, yt, LX * sSide, yb - yt);
+          ctx.globalAlpha = fadeAll * sideA * a;
+          ctx.strokeStyle = faint;
+          ctx.setLineDash([4, 4]);
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(sideX0, yt); ctx.lineTo(sideX0 + LX * sSide, yt); ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = `hsl(${HUE[s]} 70% ${dark ? 65 : 42}%)`;
+          ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+          ctx.textAlign = 'right';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(narrow ? `${s + 1}` : `slice ${s + 1}`, sideX0 - 4, (yb + yt) / 2);
+          ctx.textBaseline = 'alphabetic';
+        }
+        const grow = ease(ramp(t, 0.1, 1.2));
+        for (let i = 0; i < n; i++) {
+          const s = sliceOf(pz[i]);
+          const [x, y] = sideP(px[i], Math.min(pz[i], ZTOP));
+          if (pz[i] > ZTOP) continue;
+          ctx.globalAlpha = fadeAll * sideA * grow * (s < 0 ? 0.25 : 0.85);
+          ctx.fillStyle = s < 0 || bands < 0.5 ? faint : `hsl(${HUE[s]} 70% ${dark ? 62 : 45}%)`;
+          ctx.fillRect(x - 0.8, y - 0.8, 1.6, 1.6);
+        }
+        ctx.globalAlpha = fadeAll * sideA;
+        ctx.strokeStyle = faint;
+        ctx.beginPath(); ctx.moveTo(sideX0, sideY0); ctx.lineTo(sideX0 + LX * sSide, sideY0); ctx.stroke();
+        ctx.fillStyle = faint;
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+        ctx.textAlign = 'right';
+        ctx.fillText('x →', sideX0 + LX * sSide, sideY0 + 14);
+      }
+
+      // Beats 2–3: the top-view map of the current channel on a 0.1 m grid
+      const topA = beat === 0 ? 0 : ramp(t, T.maps + 0.3, T.maps + 0.9);
+      if (topA > 0) {
+        ctx.globalAlpha = fadeAll * topA;
+        ctx.fillStyle = cellBg;
+        ctx.fillRect(topX0, topY0, LX * sTop, LY * sTop);
+        ctx.imageSmoothingEnabled = false;
+        const ch = beat === 1 ? k : M;
+        // A short crossfade when the slice changes
+        const since = beat === 1 ? t - T.maps - 0.6 - k * SLICE_DT : t - T.dens;
+        ctx.globalAlpha = fadeAll * topA * ease(ramp(since, 0, 0.5));
+        ctx.drawImage(imgs[ch], topX0, topY0, LX * sTop, LY * sTop);
+        // 1 m grid ticks, to show the scale of the 0.1 m cells
+        ctx.globalAlpha = fadeAll * topA * 0.25;
+        ctx.strokeStyle = faint;
+        ctx.beginPath();
+        for (let m = 1; m < LX; m++) { ctx.moveTo(topX0 + m * sTop, topY0); ctx.lineTo(topX0 + m * sTop, topY0 + LY * sTop); }
+        for (let m = 1; m < LY; m++) { ctx.moveTo(topX0, topY0 + m * sTop); ctx.lineTo(topX0 + LX * sTop, topY0 + m * sTop); }
+        ctx.stroke();
+        ctx.globalAlpha = fadeAll * topA;
+        ctx.fillStyle = faint;
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.fillText(narrow ? 'grid: 1 m' : 'grid lines: 1 m (10 cells)', topX0, topY0 + LY * sTop + 14);
+        ctx.textAlign = 'right';
+        const strong = dark ? 'brighter' : 'darker';
+        ctx.fillText(beat === 1 ? (narrow ? 'higher: ' + strong : strong + ' = higher') : (narrow ? 'more pts: ' + strong : strong + ' = more points'), topX0 + LX * sTop, topY0 + LY * sTop + 14);
+      }
+
+      // The channel stack: M height maps, density, intensity
+      const LABELS = ['h₁', 'h₂', 'h₃', 'h₄', 'density', 'intensity'];
+      for (let c = 0; c < M + 2; c++) {
+        const x = sx0 + (c % 2) * (tw + gap), y = top + Math.floor(c / 2) * (th + (narrow ? 18 : 22));
+        const shownAt = c < M ? T.maps + 0.6 + c * SLICE_DT : c === M ? T.dens + 0.8 : T.dens + 3;
+        const a = ease(ramp(t, shownAt, shownAt + 0.5));
+        ctx.globalAlpha = fadeAll * 0.6;
+        ctx.strokeStyle = faint;
+        ctx.setLineDash([3, 3]);
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, tw - 1, th - 1);
+        ctx.setLineDash([]);
+        if (a <= 0) continue;
+        ctx.globalAlpha = fadeAll * a;
+        ctx.fillStyle = cellBg;
+        ctx.fillRect(x, y, tw, th);
+        if (c <= M) ctx.drawImage(imgs[c], x, y, tw, th);
+        else {
+          // Intensity: reflectance of the highest point per cell — this scan does not store it (hatched)
+          ctx.save();
+          ctx.beginPath(); ctx.rect(x, y, tw, th); ctx.clip();
+          ctx.strokeStyle = faint;
+          ctx.globalAlpha *= 0.5;
+          ctx.beginPath();
+          for (let hx = -th; hx < tw; hx += 7) { ctx.moveTo(x + hx, y + th); ctx.lineTo(x + hx + th, y); }
+          ctx.stroke();
+          ctx.restore();
+          ctx.fillStyle = text;
+          ctx.font = `500 ${narrow ? 8 : 10}px "IBM Plex Sans", sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.fillText('not in scan', x + tw / 2, y + th / 2 + 3, tw - 4);
+        }
+        const active = (beat === 1 && c === k) || (beat === 2 && c === M);
+        ctx.strokeStyle = active ? accent : c < M ? `hsl(${HUE[c]} 70% 50%)` : faint;
+        ctx.lineWidth = active ? 2 : 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, tw - 1, th - 1);
+        ctx.fillStyle = active ? accent : text;
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillText(LABELS[c], x + tw / 2, y + th + (narrow ? 11 : 14), tw + gap);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.end - 1.5); });
+    if (still) { frame(T.end - 1.5); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

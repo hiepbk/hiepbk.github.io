@@ -142,7 +142,11 @@ p { margin: 0 0 1em; }
 }
 @media (max-width: 640px) {
   .voxel-logo { width: 150px; height: 42px; }
-  .nav-links a { padding: 6px 7px; font-size: 0.85rem; }
+  .nav-inner { height: auto; flex-wrap: wrap; gap: 4px; padding-top: 6px; padding-bottom: 6px; }
+  .nav-links { width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .nav-links::-webkit-scrollbar { display: none; }
+  .nav-links a { padding: 6px 9px; font-size: 0.85rem; white-space: nowrap; }
+  .theme-toggle { margin-left: auto; flex: none; }
 }
 
 /* ---------- Home: profile sidebar + main column ---------- */
@@ -398,3 +402,89 @@ p { margin: 0 0 1em; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* ---------- Paper notes ---------- */
+a.pub { color: var(--text); }
+a.pub:hover { text-decoration: none; }
+a.pub:hover .pub-title { color: var(--accent); }
+.note-card .tag { margin-left: 6px; }
+.note-card.hidden { display: none; }
+.note-summary { color: var(--muted); font-size: 0.93rem; margin: 0; }
+.filter:disabled { opacity: 0.45; cursor: default; }
+.filter .count { margin-left: 6px; font: 500 11px var(--mono); opacity: 0.7; }
+.empty-note { color: var(--muted); padding: 8px 0 4px; }
+
+.roadmap { margin-top: 12px; }
+.roadmap-list { list-style: none; margin: 0; padding: 0; }
+.roadmap-list li { display: grid; grid-template-columns: 48px 1fr; gap: 12px; padding: 14px 0; border-top: 1px dashed var(--border); }
+.roadmap-list li:first-child { border-top: 0; }
+.roadmap-num { font: 700 1.1rem/1.5 var(--display); color: var(--faint); }
+.roadmap-list li.done .roadmap-num { color: var(--accent); }
+.roadmap-list h3 { font-size: 1rem; font-weight: 600; margin-bottom: 2px; }
+.roadmap-venue { font: 500 11px var(--mono); color: var(--accent-2); margin-left: 6px; }
+.roadmap-list p { margin: 0; color: var(--muted); font-size: 0.93rem; }
+
+.note-layout { display: grid; grid-template-columns: minmax(0, 760px) 220px; gap: 56px; justify-content: center; padding: 40px 0 64px; }
+.note-header .back { display: block; font-size: 0.9rem; color: var(--muted); margin-bottom: 18px; }
+.note-tags { display: flex; gap: 6px; margin-bottom: 12px; }
+.tag.draft { color: #b45309; background: rgba(245, 158, 11, 0.14); }
+.note-header h1 { font-weight: 700; font-size: clamp(1.8rem, 4vw, 2.4rem); letter-spacing: -0.02em; margin-bottom: 12px; }
+.note-meta { font: 13px var(--mono); color: var(--faint); }
+.paper-box { margin: 20px 0 32px; padding: 16px 18px; border: 1px solid var(--border); border-left: 3px solid var(--accent-2); border-radius: 10px; background: var(--surface); }
+.paper-box p { margin: 0 0 4px; }
+.paper-label { font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent-2); }
+.paper-title { font-weight: 600; margin-top: 4px !important; }
+.paper-authors { color: var(--muted); font-size: 0.93rem; }
+.paper-venue { color: var(--muted); font-style: italic; font-size: 0.93rem; margin-bottom: 10px !important; }
+
+.note-body { font-size: 1.06rem; line-height: 1.78; }
+.note-body h2 { font-size: 1.45rem; color: var(--heading); margin: 2.2em 0 0.6em; scroll-margin-top: 90px; }
+.note-body h3 { font-size: 1.15rem; margin: 1.8em 0 0.5em; scroll-margin-top: 90px; }
+.note-body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.note-body ul, .note-body ol { padding-left: 1.3em; }
+.note-body li::marker { color: var(--accent); }
+.note-body img { border-radius: 10px; border: 1px solid var(--border); margin: 1.4em auto 0.6em; background: #fff; }
+.note-body figure { margin: 1.6em 0; }
+.note-body figcaption { text-align: center; font-size: 0.88rem; color: var(--faint); }
+.note-body blockquote { margin: 1.6em 0; padding: 12px 18px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 10px 10px 0; color: var(--text); }
+.note-body blockquote p:last-child { margin-bottom: 0; }
+.note-body code { font: 0.88em var(--mono); background: var(--surface-2); padding: 2px 6px; border-radius: 5px; }
+.note-body pre { border-radius: 10px; padding: 16px; overflow-x: auto; font-size: 0.88rem; border: 1px solid var(--border); }
+.note-body pre code { background: none; padding: 0; }
+.note-body table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto; font-size: 0.93rem; }
+.note-body th, .note-body td { border: 1px solid var(--border); padding: 8px 12px; }
+.note-body th { background: var(--surface-2); }
+.note-body .katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+
+.note-toc { position: sticky; top: 92px; align-self: start; font-size: 0.86rem; }
+.note-toc p { font: 600 0.8rem var(--display); text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); margin-bottom: 8px; }
+.note-toc ul { list-style: none; margin: 0; padding: 0 0 0 12px; border-left: 1px solid var(--border); }
+.note-toc li { margin: 6px 0; }
+.note-toc li.d3 { padding-left: 12px; }
+.note-toc .num { color: var(--faint); margin-right: 4px; font-variant-numeric: tabular-nums; }
+.note-toc a { color: var(--muted); }
+.note-toc a:hover { color: var(--accent); }
+@media (max-width: 1000px) {
+  .note-layout { grid-template-columns: minmax(0, 1fr); }
+  .note-toc { display: none; }
+}
+
+/* Walkthrough figures (interactive canvases placed inside the article) */
+.note-body { counter-reset: figure section; }
+/* Section numbers: "1. Motivation", "4.1 Why max pooling …" */
+.note-body h2 { counter-increment: section; counter-reset: subsection; }
+.note-body h3 { counter-increment: subsection; }
+.note-body h2::before { content: counter(section) ". "; }
+.note-body h3::before { content: counter(section) "." counter(subsection) " "; }
+.wt-figure { margin: 8px 0 28px; counter-increment: figure; }
+.wt-figure .wt-canvas { display: block; width: 100%; height: 350px; }
+.wt-figure img { margin: 0 auto; }
+.wt-figure .wt-caption { margin: 10px auto 0; max-width: 680px; font-size: 0.93rem; line-height: 1.6; color: var(--muted); text-align: center; }
+.wt-caption::before { content: "Figure " counter(figure) ". "; font-weight: 600; color: var(--heading); }
+@media (max-width: 600px) { .wt-figure .wt-canvas { height: 280px; } }
+
+/* Results tables: which direction of a metric is better */
+.better-up, .better-down { color: #16a34a; font-weight: 700; margin-left: 2px; }
+:root[data-theme="dark"] .better-up, :root[data-theme="dark"] .better-down { color: #4ade80; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .better-up, :root:not([data-theme="light"]) .better-down { color: #4ade80; } }
+.note-body td strong { color: var(--text); }

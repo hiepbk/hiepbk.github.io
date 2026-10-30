@@ -1,0 +1,301 @@
+---
+// VoxelNet's efficient implementation (Section 2.3 / Fig. 5 of the paper), on a real 2 m × 1.2 m patch next to the
+// sensor (one 0.4 m height layer, seen from the top, 0.2 m voxels). Beat 1: one pass over the shuffled points —
+// the voxel coordinate is the hash key; a new voxel opens a new buffer row, a known voxel gets the point in its
+// next free slot. Beat 2: a voxel that is full (T = 35) ignores further points, so it keeps a random 35. Beat 3:
+// the stacked VFE turns the K × T × 7 buffer into K × 128. Beat 4: the coordinate buffer scatters the K vectors
+// back into the dense grid, where every empty cell is a zero vector that the 3D convolutions still visit.
+import { loadScene, rng } from '../../../lib/walkthroughFiguresA';
+
+const X0 = -2.6, Y0 = -0.4, Z0 = 1.6, NX = 10, NY = 6, V = 0.2; // patch origin (a multiple of the voxel size)
+const rand = rng(7);
+const pts = loadScene().points
+  .filter((p) => p.x >= X0 && p.x < X0 + NX * V && p.y >= Y0 && p.y < Y0 + NY * V && p.z >= Z0 && p.z < Z0 + 0.4)
+  .map((p) => [Math.round((p.x - X0) * 100), Math.round((p.y - Y0) * 100)]);
+// The points are randomized before processing (Fisher–Yates with a fixed seed)
+for (let i = pts.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [pts[i], pts[j]] = [pts[j], pts[i]]; }
+const data = { nx: NX, ny: NY, ix0: Math.round(X0 / V), iy0: Math.round(Y0 / V), iz: Math.round(Z0 / 0.4), pts };
+---
+<canvas class="wt-canvas voxel-buffer-canvas" data-buf={JSON.stringify(data)}
+  role="img" aria-label="Points are read once in random order; each point's voxel coordinate is looked up in a hash table and the point is written into that voxel's row of a K by 35 buffer, or ignored when the row is full; the voxel encoder then turns each row into one vector, which is scattered back into the dense grid of mostly empty cells"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  import { drawBlock, iconPalette } from '../../../lib/figureIcons';
+  type Buf = { nx: number; ny: number; ix0: number; iy0: number; iz: number; pts: number[][] };
+
+  const TMAX = 35;
+  const HEADLINE = [
+    'One pass over the shuffled points: the voxel coordinate is the hash key',
+    'A voxel holds at most T = 35 points: the rest are ignored',
+    'Stacked VFE on the buffer: K × 35 × 7 → K × 128',
+    'Scatter back to the dense grid: empty cells become zero vectors',
+  ];
+  const HEADLINE_SHORT = ['One pass: voxel coordinate = hash key', 'At most T = 35 points per voxel', 'VFE: K × 35 × 7 → K × 128', 'Scatter back: empty cells = zeros'];
+
+  document.querySelectorAll<HTMLCanvasElement>('.voxel-buffer-canvas').forEach((canvas) => {
+    const d: Buf = JSON.parse(canvas.dataset.buf!);
+    const ctx = canvas.getContext('2d')!;
+    const N = d.pts.length;
+
+    // Replay the single pass: row of each voxel (in order of first appearance), slot of each point (−1 = ignored)
+    const rowOf = new Map<number, number>(), coords: number[][] = [], fill: number[] = [];
+    const slot = new Int16Array(N), row = new Int16Array(N), firstIgnored: number[] = [];
+    d.pts.forEach(([x, y], i) => {
+      const cx = Math.min(d.nx - 1, Math.floor(x / 20)), cy = Math.min(d.ny - 1, Math.floor(y / 20)), key = cy * d.nx + cx;
+      if (!rowOf.has(key)) { rowOf.set(key, coords.length); coords.push([cx, cy]); fill.push(0); }
+      const r = rowOf.get(key)!;
+      row[i] = r;
+      if (fill[r] < TMAX) slot[i] = fill[r]++;
+      else { slot[i] = -1; if (!firstIgnored.includes(r)) firstIgnored.push(r); }
+    });
+    const K = coords.length;
+    const total = new Array(K).fill(0);
+    for (let i = 0; i < N; i++) total[row[i]]++;
+    const ignored = total.map((c) => Math.max(0, c - TMAX));
+    const nIgnored = ignored.reduce((s, v) => s + v, 0);
+    const hue = (r: number) => (195 + r * 47) % 360;
+
+    // Beats: hashing pass · the full voxels · VFE · scatter
+    const T = { pass: 0, full: 9, vfe: 14, scatter: 19.5, end: 27 };
+    const BEATS = [T.pass, T.full, T.vfe, T.scatter];
+    // Point i is processed at time at(i): the first 14 slowly, the rest quickly
+    const SLOW = 14, DT_SLOW = 0.36, FAST_END = 8.2;
+    const at = (i: number) => (i < SLOW ? 0.8 + i * DT_SLOW : 0.8 + SLOW * DT_SLOW + ((i - SLOW) / (N - SLOW)) * (FAST_END - 0.8 - SLOW * DT_SLOW));
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const cellBg = dark ? '#1f2737' : '#eef1f6';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.full ? 0 : t < T.vfe ? 1 : t < T.scatter ? 2 : 3;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const narrow = W < 520;
+      // Number of points processed so far
+      let done = 0;
+      while (done < N && at(done) <= t) done++;
+      const cur = beat === 0 && done > 0 && done <= N && t - at(done - 1) < (done - 1 < SLOW ? DT_SLOW : 0.2) ? done - 1 : -1;
+      const rowsOpen = done === 0 ? 0 : Math.max(...Array.from(row.subarray(0, done))) + 1;
+
+      // Layout: patch (top view) on the left, buffer on the right
+      const top = narrow ? 92 : 100;
+      const cs = narrow ? 15 : 25;
+      const gx = narrow ? 6 : 20, gy = top + (narrow ? 4 : 10);
+      const gW = d.nx * cs, gH = d.ny * cs;
+      const coordW = narrow ? 0 : 74;
+      const bx = gx + gW + (narrow ? 14 : 36) + coordW;
+      const vecW = narrow ? 26 : 40;
+      const bW = W - bx - vecW - (narrow ? 8 : 16);
+      const sw = bW / TMAX;
+      const rh = Math.min(narrow ? 10 : 14, (H - top - 30) / K);
+      const by = top;
+      const leftCx = gx + gW / 2, rightCx = bx - coordW + (coordW + bW + vecW) / 2;
+
+      // Headline, titles, status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(beat < 3 ? (narrow ? 'Voxels (top)' : 'Voxels, seen from the top') : (narrow ? 'Dense grid' : 'Dense grid'), leftCx, 46, gW + 20);
+      const bufTitle = beat < 2 ? (narrow ? `Buffer K × 35 × 7` : `Input buffer: K × T × 7`) : (narrow ? `K × 128` : `Voxel features: K × 128`);
+      ctx.fillText(bufTitle, rightCx, 46, coordW + bW + vecW);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = done ? accent : text;
+      const lNote = beat < 3 ? (narrow ? `${done} / ${N} points read` : `${done} / ${N} points read, in random order`) : narrow ? `${K} of ${d.nx * d.ny} cells non-empty` : `${K} of ${d.nx * d.ny} cells non-empty here`;
+      ctx.fillText(lNote, leftCx, 64, gW + 30);
+      const ign = beat === 0 ? Array.from(slot.subarray(0, done)).filter((s) => s < 0).length : nIgnored;
+      const rNote = beat === 0 ? (narrow ? `K = ${rowsOpen} rows · ${ign} ignored` : `K = ${rowsOpen} voxels · ${ign} points ignored`)
+        : beat === 1 ? (narrow ? `${firstIgnored.length} full voxels, ${nIgnored} ignored` : `${firstIgnored.length} voxels hit T = 35 → ${nIgnored} points ignored`)
+          : beat === 2 ? (narrow ? 'empty slots stay 0' : 'one 128-D vector per row; empty slots stay 0')
+            : (narrow ? 'coordinate buffer → cell' : 'each row goes back to its voxel coordinate');
+      ctx.fillText(rNote, rightCx, 64, coordW + bW + vecW);
+
+      // Patch grid (one height layer, top view)
+      const scatterP = beat === 3 ? ease(ramp(t, T.scatter + 0.6, T.scatter + 2.2)) : 0;
+      for (let cy = 0; cy < d.ny; cy++) for (let cx = 0; cx < d.nx; cx++) {
+        const x = gx + cx * cs, y = gy + (d.ny - 1 - cy) * cs;
+        ctx.globalAlpha = fadeAll;
+        ctx.fillStyle = cellBg;
+        ctx.fillRect(x + 0.5, y + 0.5, cs - 1, cs - 1);
+        // Beat 4: empty cells are filled with zero vectors
+        if (beat === 3 && !rowOf.has(cy * d.nx + cx)) {
+          ctx.globalAlpha = fadeAll * ramp(t, T.scatter + 2.6 + ((cx + cy) % 5) * 0.12, T.scatter + 3.0 + ((cx + cy) % 5) * 0.12);
+          ctx.fillStyle = faint;
+          ctx.font = `500 ${narrow ? 8 : 11}px "IBM Plex Mono", monospace`;
+          ctx.textBaseline = 'middle';
+          ctx.fillText('0', x + cs / 2, y + cs / 2 + 0.5);
+          ctx.textBaseline = 'alphabetic';
+        }
+      }
+      // Rows open as their voxel is first seen: outline the voxel in the row colour
+      coords.forEach(([cx, cy], r) => {
+        if (r >= rowsOpen) return;
+        const x = gx + cx * cs, y = gy + (d.ny - 1 - cy) * cs;
+        ctx.globalAlpha = fadeAll * (beat === 1 && !firstIgnored.includes(r) ? 0.35 : 1);
+        ctx.strokeStyle = `hsl(${hue(r)} 70% 50%)`;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x + 1, y + 1, cs - 2, cs - 2);
+      });
+      // Points: grey until read, then in their voxel's colour (red if ignored); they fade in beats 3–4
+      const ptA = beat < 2 ? 1 : 1 - ramp(t, T.vfe + 0.5, T.vfe + 1.5) * 0.75;
+      for (let i = 0; i < N; i++) {
+        const [px, py] = d.pts[i];
+        const x = gx + (px / 20) * cs, y = gy + gH - (py / 20) * cs;
+        const read = i < done;
+        ctx.globalAlpha = fadeAll * ptA * (read ? 0.9 : 0.35);
+        ctx.fillStyle = !read ? faint : slot[i] < 0 ? red : `hsl(${hue(row[i])} 70% ${dark ? 60 : 45}%)`;
+        const s = i === cur ? 6 : narrow ? 1.8 : 2.8;
+        ctx.fillRect(x - s / 2, y - s / 2, s, s);
+      }
+      // Scattered vectors land in their cells
+      if (scatterP > 0) {
+        coords.forEach(([cx, cy], r) => {
+          const tx = gx + cx * cs + 3, ty = gy + (d.ny - 1 - cy) * cs + 3;
+          const fx = bx + bW + 6, fy = by + r * rh;
+          ctx.globalAlpha = fadeAll;
+          ctx.fillStyle = `hsl(${hue(r)} 70% 50%)`;
+          ctx.fillRect(fx + (tx - fx) * scatterP, fy + (ty - fy) * scatterP, Math.max(4, (cs - 6) * scatterP), Math.max(3, (cs - 6) * scatterP));
+        });
+      }
+
+      // Buffer: coordinate column + T slots per row
+      ctx.font = `500 ${narrow ? 8 : 10}px "IBM Plex Mono", monospace`;
+      ctx.textBaseline = 'middle';
+      const collapse = beat >= 2 ? ease(ramp(t, T.vfe + 0.6, T.vfe + 2.0)) : 0;
+      for (let r = 0; r < K; r++) {
+        if (r >= rowsOpen) {
+          ctx.globalAlpha = fadeAll * 0.35;
+          ctx.strokeStyle = faint;
+          ctx.setLineDash([2, 3]);
+          ctx.strokeRect(bx + 0.5, by + r * rh + 1.5, bW - 1, rh - 3);
+          ctx.setLineDash([]);
+          continue;
+        }
+        const y = by + r * rh;
+        const dim = beat === 1 && !firstIgnored.includes(r) ? 0.35 : 1;
+        if (coordW) {
+          ctx.globalAlpha = fadeAll * dim;
+          ctx.fillStyle = `hsl(${hue(r)} 70% ${dark ? 62 : 42}%)`;
+          ctx.textAlign = 'right';
+          const [cx, cy] = coords[r];
+          ctx.fillText(`(${d.ix0 + cx}, ${d.iy0 + cy}, ${d.iz})`, bx - 6, y + rh / 2);
+        }
+        // Slots fill as points are read
+        let filled = 0;
+        for (let i = 0; i < done; i++) if (row[i] === r && slot[i] >= 0) filled++;
+        if (collapse < 1) {
+          ctx.globalAlpha = fadeAll * dim * (1 - collapse);
+          ctx.fillStyle = cellBg;
+          ctx.fillRect(bx, y + 1, bW, rh - 2);
+          ctx.fillStyle = `hsl(${hue(r)} 70% 50%)`;
+          ctx.fillRect(bx, y + 1, filled * sw, rh - 2);
+          // Slot separators
+          if (!narrow) {
+            ctx.strokeStyle = dark ? '#0b0f17' : '#ffffff';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            for (let k = 1; k < Math.max(filled, 1); k++) { ctx.moveTo(bx + k * sw, y + 1); ctx.lineTo(bx + k * sw, y + rh - 1); }
+            ctx.stroke();
+          }
+          // Ignored points of this row, as a red count after the full row
+          let ign = 0;
+          for (let i = 0; i < done; i++) if (row[i] === r && slot[i] < 0) ign++;
+          if (ign) {
+            ctx.fillStyle = red;
+            ctx.textAlign = 'left';
+            ctx.font = `600 ${narrow ? 8 : 10}px "IBM Plex Mono", monospace`;
+            ctx.fillText(`+${ign}✗`, bx + bW + 4, y + rh / 2);
+            ctx.font = `500 ${narrow ? 8 : 10}px "IBM Plex Mono", monospace`;
+          }
+        }
+        // Beat 3: the row collapses into one feature vector next to the buffer
+        if (collapse > 0) {
+          ctx.globalAlpha = fadeAll * (beat === 3 ? 1 - scatterP * 0.6 : 1);
+          ctx.fillStyle = `hsl(${hue(r)} 70% 50%)`;
+          const w = bW + (vecW - 8 - bW) * collapse;
+          ctx.fillRect(bx + (bW + 6) * collapse, y + 2, w, rh - 4);
+        }
+      }
+      // Beat 3: the stacked VFE block that turns each row into one vector
+      if (beat === 2) {
+        const pal = iconPalette();
+        const bw2 = narrow ? 40 : 64, bh2 = narrow ? 26 : 38;
+        drawBlock(ctx, 'mlp', bx + bW / 2 - bw2 / 2, by + K * rh + (narrow ? 22 : 26), bw2, bh2, pal, { shared: true, label: narrow ? undefined : 'stacked VFE', sub: narrow ? undefined : 'shared by all voxels', active: ramp(t, T.vfe + 0.3, T.vfe + 0.8) * (1 - ramp(t, T.vfe + 3, T.vfe + 3.6)), alpha: fadeAll * ramp(t, T.vfe + 0.1, T.vfe + 0.5), compact: narrow });
+      }
+      // Slot axis label
+      ctx.globalAlpha = fadeAll * (1 - collapse);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = faint;
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+      ctx.fillText(narrow ? 'T = 35 slots' : 'T = 35 point slots per voxel (each 7-D)', bx + bW / 2, by + K * rh + 10, bW);
+      if (coordW) { ctx.textAlign = 'right'; ctx.fillText('coordinate', bx - 6, by + K * rh + 10); }
+      ctx.textBaseline = 'alphabetic';
+
+      // A line from the current point to its slot during the slow part of the pass
+      if (cur >= 0 && cur < SLOW) {
+        const [px, py] = d.pts[cur];
+        const x = gx + (px / 20) * cs, y = gy + gH - (py / 20) * cs;
+        const r = row[cur], s = slot[cur];
+        const tx = bx + (s < 0 ? bW : (s + 0.5) * sw), ty = by + r * rh + rh / 2;
+        ctx.globalAlpha = fadeAll;
+        ctx.strokeStyle = s < 0 ? red : accent;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(tx, ty); ctx.stroke();
+        if (!narrow) {
+          const first = Array.from(row.subarray(0, cur)).indexOf(r) < 0;
+          ctx.fillStyle = s < 0 ? red : accent;
+          ctx.font = `500 11px "IBM Plex Sans", sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.fillText(s < 0 ? 'full → ignored' : first ? 'new voxel → new row' : `found → slot ${s + 1}`, leftCx, gy + gH + 18);
+        }
+      }
+
+      // Beat 4: the size of the real grid
+      if (beat === 3) {
+        ctx.globalAlpha = fadeAll * ramp(t, T.scatter + 3.4, T.scatter + 3.9);
+        ctx.fillStyle = accent;
+        ctx.textAlign = 'center';
+        ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+        ctx.fillText(narrow ? 'full grid: 10 × 400 × 352 cells, >90% empty' : 'full grid for cars: 10 × 400 × 352 = 1,408,000 cells, typically >90% empty — the 3D convs visit them all', W / 2, H - 10, W - 8);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.full + 2); });
+    if (still) { frame(T.full + 2); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

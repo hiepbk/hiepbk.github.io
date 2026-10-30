@@ -1,0 +1,223 @@
+---
+// "Tracking as closest-point matching" in BEV (an illustrative road scene). Beat 1: tracks of frame t−1 and the
+// detections of frame t; plain closest matching would swap two cars passing each other. Beat 2: every detection
+// is moved back by its predicted velocity (−v). Beat 3: greedy matching in descending score, to the closest
+// unmatched track within the class-wise distance τ. Beat 4: an unmatched detection starts a new track; an
+// unmatched track is kept (up to T = 3 frames) and moved with its last velocity.
+const tracks = [
+  { id: 1, x: -7.0, y: -1.8 }, // fast, to the right
+  { id: 2, x: -1.2, y: 1.8 },  // fast, to the left
+  { id: 3, x: 6.5, y: 5.6 },   // parked
+  { id: 4, x: 3.5, y: -1.8, vx: 3.2, vy: 0 }, // occluded at t
+];
+// Detections at t, in descending confidence: position, predicted displacement to t−1 (v), score, matching track
+const dets = [
+  { x: -2.8, y: -1.8, vx: 4.1, vy: 0, s: 0.93, track: 1 },
+  { x: -5.6, y: 1.8, vx: -4.3, vy: 0, s: 0.88, track: 2 },
+  { x: 6.5, y: 5.6, vx: 0, vy: 0, s: 0.81, track: 3 },
+  { x: 10.5, y: 1.8, vx: -2.5, vy: 0, s: 0.62, track: 0 }, // a new car
+];
+---
+<canvas class="wt-canvas cptrack-canvas" data-cptrack={JSON.stringify({ tracks, dets, tau: 1.5 })}
+  role="img" aria-label="Center-based tracking: detections of the current frame are moved back by their predicted velocity and greedily matched, highest score first, to the closest track of the previous frame within a distance threshold; an unmatched detection starts a new track and an unmatched track is kept for up to three frames"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  type Track = { id: number; x: number; y: number; vx?: number; vy?: number };
+  type Det = { x: number; y: number; vx: number; vy: number; s: number; track: number };
+
+  const HEADLINE = [
+    'Which detection continues which track? Closest point alone swaps cars',
+    'Move each detection back by its predicted velocity: −v',
+    'Greedy, highest score first: the closest track within τ',
+    'Unmatched: new detection → new track; lost track kept ≤ 3 frames',
+  ];
+  const HEADLINE_SHORT = [
+    'Closest point alone swaps cars',
+    'Move detections back by −v',
+    'Greedy: closest track within τ',
+    'New track; lost track kept ≤ 3 frames',
+  ];
+
+  document.querySelectorAll<HTMLCanvasElement>('.cptrack-canvas').forEach((canvas) => {
+    const { tracks, dets, tau }: { tracks: Track[]; dets: Det[]; tau: number } = JSON.parse(canvas.dataset.cptrack!);
+    const ctx = canvas.getContext('2d')!;
+    const X0 = -10.5, X1 = 13.5, Y0 = -4.2, Y1 = 7.6;
+    const L = 4.4, Wd = 1.8; // car footprint, metres
+    const trackOf = (id: number) => tracks.find((k) => k.id === id)!;
+    // Closest track to each raw detection (no velocity): the naive matching of beat 1
+    const naive = dets.map((d) => tracks.reduce((a, b) => (Math.hypot(b.x - d.x, b.y - d.y) < Math.hypot(a.x - d.x, a.y - d.y) ? b : a)));
+
+    // Beats: naive · back-projection · greedy matching · unmatched
+    const T = { naive: 0, back: 5.0, match: 9.5, rest: 15.5, end: 22 };
+    const BEATS = [T.naive, T.back, T.match, T.rest];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    const matchAt = (i: number) => T.match + 0.6 + i * 1.3;
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const border = css.getPropertyValue('--border').trim() || '#e1e5ec';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const neutral = dark ? '#8b97ab' : '#64748b';
+      const idHue = [0, 200, 28, 145, 280, 330];
+      const idColor = (id: number, a = 1) => `hsl(${idHue[id]} 75% ${dark ? 62 : 45}% / ${a})`;
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.back ? 0 : t < T.match ? 1 : t < T.rest ? 2 : 3;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const back = beat >= 1 ? ease(ramp(t, T.back + 0.5, T.back + 2.0)) : 0;
+
+      // Layout: one BEV panel across the width, legend line under the title
+      const narrow = W < 520;
+      const top = 82;
+      const S = Math.min((W - 8) / (X1 - X0), (H - top - 4) / (Y1 - Y0));
+      const ox = (W - S * (X1 - X0)) / 2, oy = top + (H - top - S * (Y1 - Y0)) / 2;
+      const mx = (x: number) => ox + (x - X0) * S, my = (y: number) => oy + (Y1 - y) * S;
+
+      // Headline, title and status line
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(narrow ? 'Frame t−1 → t, BEV' : 'Frames t−1 (outlines) and t (filled), bird’s-eye view', W / 2, 42, W - 8);
+      const note = narrow
+        ? ['grey: detections at t', 'p̂ − v̂: back to t−1', `distance ≤ τ, by score`, 'id 5 new · id 4 age 1'][beat]
+        : ['grey: detections at t · red dashes: closest point, no velocity', 'p̂ − v̂: where each detection was at t−1', `distance to the track ≤ τ, in order of score`, 'id 5 is new · id 4 is unmatched: age 1 of 3, moved by its last velocity'][beat];
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(note, W / 2, 60, W - 8);
+
+      // Road: two lanes plus a parking strip
+      ctx.globalAlpha = fadeAll;
+      ctx.strokeStyle = border; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (const y of [-3.6, 3.6]) { ctx.moveTo(mx(X0), my(y)); ctx.lineTo(mx(X1), my(y)); }
+      ctx.stroke();
+      ctx.setLineDash([8, 8]);
+      ctx.beginPath(); ctx.moveTo(mx(X0), my(0)); ctx.lineTo(mx(X1), my(0)); ctx.stroke();
+      ctx.setLineDash([]);
+
+      const car = (x: number, y: number, fill: string | null, stroke: string | null, dash = false, w = 1.6) => {
+        const x0 = mx(x - L / 2), y0 = my(y + Wd / 2);
+        if (fill) { ctx.fillStyle = fill; ctx.fillRect(x0, y0, L * S, Wd * S); }
+        if (stroke) {
+          ctx.strokeStyle = stroke; ctx.lineWidth = w;
+          if (dash) ctx.setLineDash([4, 3]);
+          ctx.strokeRect(x0, y0, L * S, Wd * S);
+          ctx.setLineDash([]);
+        }
+      };
+      const label = (s: string, x: number, y: number, color: string) => {
+        ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = color; ctx.textAlign = 'center';
+        ctx.fillText(s, mx(x), my(y + Wd / 2) - 4);
+      };
+      const arrow = (x0: number, y0: number, x1: number, y1: number, color: string, w = 1.6) => {
+        const a = Math.atan2(y1 - y0, x1 - x0);
+        ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = w;
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1 - 5 * Math.cos(a), y1 - 5 * Math.sin(a)); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x1, y1);
+        ctx.lineTo(x1 - 8 * Math.cos(a - 0.4), y1 - 8 * Math.sin(a - 0.4)); ctx.lineTo(x1 - 8 * Math.cos(a + 0.4), y1 - 8 * Math.sin(a + 0.4));
+        ctx.closePath(); ctx.fill();
+      };
+
+      // Tracks of frame t−1: coloured outlines with their id (track 4 moves on with its last velocity in beat 4)
+      tracks.forEach((k) => {
+        let x = k.x;
+        const lost = k.id === 4 && beat === 3;
+        if (lost) x += (k.vx ?? 0) * ease(ramp(t, T.rest + 1.5, T.rest + 2.8));
+        ctx.globalAlpha = fadeAll * (lost ? 0.85 : 1);
+        car(x, k.y, idColor(k.id, 0.1), idColor(k.id), lost, 1.6);
+        ctx.globalAlpha = fadeAll;
+        label(lost ? `id ${k.id} · age 1` : `id ${k.id}`, x, k.y, idColor(k.id));
+      });
+
+      // Detections at t: grey until matched, then in their track's colour; the score next to them
+      dets.forEach((dt, i) => {
+        const matched = beat >= 2 && t >= matchAt(i) + 0.6;
+        const id = dt.track || 5;
+        const color = matched && (dt.track || beat === 3) ? idColor(id, 0.85) : dark ? 'rgba(139,151,171,0.75)' : 'rgba(100,116,139,0.6)';
+        const isNew = !dt.track;
+        const newOn = isNew && beat === 3 ? ease(ramp(t, T.rest + 0.4, T.rest + 1.0)) : 0;
+        ctx.globalAlpha = fadeAll;
+        car(dt.x, dt.y, isNew && newOn > 0 ? idColor(5, 0.85 * newOn) : color, null);
+        ctx.font = `500 ${narrow ? 9 : 10}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = dark ? '#0b0f17' : '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.fillText(dt.s.toFixed(2), mx(dt.x), my(dt.y) + 3.5);
+        if (newOn > 0) { ctx.globalAlpha = fadeAll * newOn; label('id 5 (new)', dt.x, dt.y, idColor(5)); }
+
+        // Beat 1: naive closest-point lines (the swapped pair in red)
+        if (beat === 0) {
+          const k = naive[i];
+          const wrong = k.id !== dt.track;
+          ctx.globalAlpha = fadeAll * ease(ramp(t, 1.5 + i * 0.4, 2.0 + i * 0.4)) * (wrong ? 1 : 0.4);
+          ctx.strokeStyle = wrong ? red : neutral; ctx.lineWidth = wrong ? 2 : 1; ctx.setLineDash([5, 4]);
+          ctx.beginPath(); ctx.moveTo(mx(dt.x), my(dt.y)); ctx.lineTo(mx(k.x), my(k.y)); ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        // Beat 2+: the back-projected centre p − v (arrow + ghost), with the τ circle during matching
+        if (beat >= 1 && (dt.vx || dt.vy)) {
+          const bx = dt.x - dt.vx * back, by = dt.y - dt.vy * back;
+          ctx.globalAlpha = fadeAll * (beat === 1 ? 1 : 0.6);
+          arrow(mx(dt.x), my(dt.y), mx(bx), my(by), accent, 1.6);
+        }
+        if (beat >= 1) {
+          const bx = dt.x - dt.vx * back, by = dt.y - dt.vy * back;
+          ctx.globalAlpha = fadeAll * back;
+          ctx.fillStyle = accent;
+          ctx.beginPath(); ctx.arc(mx(bx), my(by), 3.5, 0, Math.PI * 2); ctx.fill();
+          if (beat === 2 && t >= matchAt(i) && t < matchAt(i + 1)) {
+            ctx.globalAlpha = fadeAll * ease(ramp(t, matchAt(i), matchAt(i) + 0.3));
+            ctx.strokeStyle = accent; ctx.lineWidth = 1.2; ctx.setLineDash([3, 3]);
+            ctx.beginPath(); ctx.arc(mx(bx), my(by), tau * S, 0, Math.PI * 2); ctx.stroke();
+            ctx.setLineDash([]);
+          }
+          // Match line to the track centre
+          if (beat >= 2 && dt.track && t >= matchAt(i) + 0.3) {
+            const k = trackOf(dt.track);
+            ctx.globalAlpha = fadeAll * ease(ramp(t, matchAt(i) + 0.3, matchAt(i) + 0.7));
+            ctx.strokeStyle = idColor(dt.track); ctx.lineWidth = 2.2;
+            ctx.beginPath(); ctx.moveTo(mx(bx), my(by)); ctx.lineTo(mx(k.x), my(k.y)); ctx.stroke();
+          }
+        }
+      });
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.end - 1); });
+    if (still) { frame(T.end - 1); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

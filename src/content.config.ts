@@ -47,4 +47,42 @@ const projects = defineCollection({
   }),
 });
 
-export const collections = { publications, experience, projects };
+const category = z.enum([
+  'object-detection', 'semantic-segmentation', 'instance-segmentation',
+  'panoptic-segmentation', 'tracking', 'scene-completion',
+]);
+
+// Paper walkthroughs: one file per paper in src/content/walkthroughs/<category>/
+const walkthroughs = defineCollection({
+  loader: glob({ pattern: '**/*.{md,mdx}', base: './src/content/walkthroughs' }),
+  schema: z.object({
+    title: z.string(),
+    category,
+    order: z.number().optional(), // position in the reading roadmap
+    summary: z.string(),
+    image: z.string().optional(),
+    date: z.coerce.date(),
+    updated: z.coerce.date().optional(),
+    draft: z.boolean().default(false),
+    paper: z.object({
+      title: z.string(),
+      authors: z.string(),
+      venue: z.string(),
+      links: z.array(link).default([]),
+    }),
+  }),
+});
+
+// Papers planned for the walkthroughs, shown as a reading roadmap
+const roadmap = defineCollection({
+  loader: file('src/data/walkthroughs-roadmap.yaml'),
+  schema: z.object({
+    category,
+    order: z.number(),
+    paper: z.string(),
+    venue: z.string(),
+    hook: z.string(),
+  }),
+});
+
+export const collections = { publications, experience, projects, walkthroughs, roadmap };

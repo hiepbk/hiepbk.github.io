@@ -22,4 +22,15 @@ export const nav = [
   { title: 'Home', url: '/' },
   { title: 'Projects', url: '/projects/' },
   { title: 'Publications', url: '/publications/' },
+  { title: 'Paper Walkthroughs', url: '/walkthroughs/' },
 ];
+
+// Categories of the paper walkthroughs, in display order
+export const walkthroughCategories = [
+  { id: 'object-detection', name: '3D Object Detection' },
+  { id: 'semantic-segmentation', name: '3D Semantic Segmentation' },
+  { id: 'instance-segmentation', name: '3D Instance Segmentation' },
+  { id: 'panoptic-segmentation', name: '3D Panoptic Segmentation' },
+  { id: 'tracking', name: '3D Multi-Object Tracking' },
+  { id: 'scene-completion', name: '3D Scene Completion' },
+] as const;

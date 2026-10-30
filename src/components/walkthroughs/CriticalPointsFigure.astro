@@ -1,0 +1,326 @@
+---
+// "Why max pooling is robust: critical points": the real car through a shared MLP h (3 → 64 → 64, ReLU,
+// fixed-seed random weights — untrained, for illustration) and a max pool over the points. Beat 1 shows
+// which point wins each channel (the critical set), beat 2 removes every non-critical point while the pooled
+// feature stays bit-for-bit identical, beat 3 removes one critical point and its channels change.
+// The weights are drawn here at build time; the browser runs h and the max pool itself, live.
+import { loadCar } from '../../lib/walkthroughData';
+
+const pts = loadCar();
+// Normalise to the unit sphere (as PointNet does) before h
+const c = [0, 1, 2].map((k) => pts.reduce((s, p) => s + p[k], 0) / pts.length);
+const r = Math.max(...pts.map((p) => Math.hypot(p[0] - c[0], p[1] - c[1], p[2] - c[2])));
+
+// Fixed-seed Gaussian weights (Park–Miller + Box–Muller)
+let seed = 1;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const gauss = () => Math.sqrt(-2 * Math.log(rnd())) * Math.cos(2 * Math.PI * rnd());
+const r3 = (v: number) => Math.round(v * 1000) / 1000;
+const HID = 64, K = 64;
+const W1 = Array.from({ length: HID }, () => [0, 1, 2].map(() => r3(gauss() * Math.sqrt(2 / 3) * 2)));
+const b1 = Array.from({ length: HID }, () => r3(gauss() * 0.5));
+const W2 = Array.from({ length: K }, () => Array.from({ length: HID }, () => r3(gauss() * Math.sqrt(2 / HID))));
+const data = { pts, c, r, W1, b1, W2 };
+---
+<canvas class="wt-canvas critical-canvas" data-net={JSON.stringify(data)}
+  role="img" aria-label="Each channel of the max-pooled feature of a car is won by a single point; removing all other points leaves the feature unchanged, removing one of these critical points changes it"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../lib/figureClock';
+  import { iconPalette, drawBlock, drawArrow } from '../../lib/figureIcons';
+  type P = [number, number, number];
+  type Net = { pts: P[]; c: number[]; r: number; W1: number[][]; b1: number[]; W2: number[][] };
+
+  const HEADLINE = [
+    'Max pooling: each channel takes its value from a single point',
+    'Remove every non-critical point: the global feature stays exactly the same',
+    'Remove one critical point: its channels change',
+  ];
+  const HEADLINE_SHORT = [
+    'Each channel is won by a single point',
+    'Drop non-critical points: same feature',
+    'Drop a critical point: feature changes',
+  ];
+
+  document.querySelectorAll<HTMLCanvasElement>('.critical-canvas').forEach((canvas) => {
+    const net: Net = JSON.parse(canvas.dataset.net!);
+    const ctx = canvas.getContext('2d')!;
+    const pts = net.pts, N = pts.length, K = net.W2.length;
+
+    // h(x) for every point: N × K
+    const F = pts.map((p) => {
+      const x = p.map((v, k) => (v - net.c[k]) / net.r);
+      const hid = net.W1.map((w, j) => Math.max(0, w[0] * x[0] + w[1] * x[1] + w[2] * x[2] + net.b1[j]));
+      return net.W2.map((w) => w.reduce((a, wj, j) => a + wj * hid[j], 0));
+    });
+    // Max pool over the points still present; also returns the winning point per channel
+    const pool = (alive: (i: number) => boolean) => {
+      const g = new Array<number>(K).fill(-Infinity), win = new Array<number>(K).fill(-1);
+      for (let i = 0; i < N; i++) {
+        if (!alive(i)) continue;
+        for (let k = 0; k < K; k++) if (F[i][k] > g[k]) { g[k] = F[i][k]; win[k] = i; }
+      }
+      return { g, win };
+    };
+    const full = pool(() => true);
+    const critical = [...new Set(full.win)];
+    const isCrit = new Set(critical);
+    // Beat 3 removes the critical point whose loss changes the feature the most (clearest to see)
+    const without = (v: number) => pool((i) => isCrit.has(i) && i !== v);
+    const loss = (v: number) => without(v).g.reduce((s, x, k) => s + full.g[k] - x, 0);
+    const victim = critical.reduce((a, b) => (loss(b) > loss(a) ? b : a));
+    const afterKill = without(victim);
+    const hueOf = new Map<number, number>();
+    [...critical, ...afterKill.win.filter((w) => !isCrit.has(w))].forEach((i, n) => hueOf.set(i, (n * 137.5) % 360));
+    // Fixed value range for the bars
+    const vals = [...full.g, ...afterKill.g];
+    const vLo = Math.min(0, ...vals), vHi = Math.max(...vals);
+
+    const T = { pool: 0, drop: 6.5, kill: 13, end: 20 };
+    const BEATS = [T.pool, T.drop, T.kill];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    // Beat 2: non-critical points leave in a random order; beat 3: the victim leaves
+    let s = 5;
+    const rand = () => (s = (s * 16807) % 2147483647) / 2147483647;
+    const leaveAt = pts.map((_, i) => (isCrit.has(i) ? 1e9 : T.drop + 0.5 + rand() * 2.5));
+    leaveAt[victim] = T.kill + 1.4;
+    const BAR_MOVE = [T.kill + 1.8, T.kill + 2.6];
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.drop ? 0 : t < T.kill ? 1 : 2;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const narrow = W < 520;
+
+      // Live max pool over the points present now, compared exactly with the full cloud's feature
+      const alive = (i: number) => leaveAt[i] > t;
+      const live = pool(alive);
+      const nAlive = leaveAt.filter((a) => a > t).length;
+      const changed = live.g.map((v, k) => v !== full.g[k]);
+      const nChanged = changed.filter(Boolean).length;
+
+      // Layout: car on the left, the K-d global feature as bars on the right
+      const chartW = narrow ? 140 : 250;
+      const cx0 = W - chartW - (narrow ? 8 : 40);
+      // Between the car and the bars: the shared MLP h and the max pool
+      const colW = narrow ? 50 : 160, carArea = cx0 - colW;
+      const carCx = (carArea - 10) / 2, carCy = H * 0.74;
+      const S = Math.min(narrow ? (carArea - 12) / 5.2 : (carArea - 40) / 6.4, H / 4.2);
+
+      // Headline, titles, status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(`${nAlive} points`, carCx, 46, carArea - 8);
+      ctx.fillText(narrow ? `MAX h(x) · ${K}-d` : `Global feature MAX h(x) · ${K}-d`, cx0 + chartW / 2, 46, chartW + 30);
+      const reveal = ease(ramp(t, 2.4, 3.2));
+      const leftNote = [
+        reveal > 0 ? `${critical.length} critical points` : narrow ? 'shared MLP h' : 'every point through the shared MLP h',
+        narrow ? `${critical.length} critical kept` : `only the ${critical.length} critical points left`,
+        narrow ? '1 critical removed' : '1 critical point removed',
+      ][beat];
+      const rightNote = [
+        narrow ? '1 winner per channel' : 'each channel: one winning point',
+        'unchanged ✓',
+        `changed: ${nChanged} of ${K} channels`,
+      ][beat];
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(leftNote, carCx, 64, carArea - 8);
+      ctx.fillStyle = beat === 2 && nChanged > 0 ? red : beat === 0 ? text : accent;
+      ctx.fillText(beat === 2 && nChanged === 0 ? 'unchanged ✓' : rightNote, cx0 + chartW / 2, 64, chartW + 30);
+      // Honesty note
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = faint;
+      ctx.textAlign = 'left';
+      ctx.fillText(narrow ? 'h: random, untrained' : 'h: random untrained MLP 3 → 64 → 64', 4, H - 4);
+
+      // Car in a gentle 3D sway
+      const a = -0.55 + 0.18 * Math.sin(time * 0.6);
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const carXY = (p: P) => {
+        const u = p[0] * ca - p[1] * sa, v = p[0] * sa + p[1] * ca;
+        return [carCx + u * S, carCy - p[2] * S + v * S * 0.35] as const;
+      };
+
+      // Bars
+      const chartTop = 92, chartBottom = H - 22;
+      const yOf = (v: number) => chartBottom - ((v - vLo) / (vHi - vLo)) * (chartBottom - chartTop);
+      const y0 = yOf(0), bw = chartW / K;
+      const grow = ease(ramp(t, 0.6, 2.0));
+      const barMove = ease(ramp(t, BAR_MOVE[0], BAR_MOVE[1]));
+      const barTop: number[] = [];
+      // Channel colour = colour of its winning point (grey until the winners are revealed)
+      const barColor = (i: number) => `hsl(${hueOf.get(i) ?? 0} 75% ${dark ? 62 : 52}%)`;
+      ctx.globalAlpha = fadeAll * 0.5;
+      ctx.strokeStyle = faint;
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(cx0, y0 + 0.5); ctx.lineTo(cx0 + chartW, y0 + 0.5); ctx.stroke();
+      for (let k = 0; k < K; k++) {
+        const target = beat === 2 ? full.g[k] + (live.g[k] - full.g[k]) * barMove : full.g[k];
+        const v = target * grow;
+        const x = cx0 + k * bw, y = yOf(v);
+        barTop[k] = y;
+        const winner = beat === 2 && barMove > 0.5 ? live.win[k] : full.win[k];
+        ctx.globalAlpha = fadeAll;
+        ctx.fillStyle = reveal > 0 ? barColor(winner) : text;
+        ctx.globalAlpha = fadeAll * (reveal > 0 ? 0.35 + 0.65 * reveal : 0.6);
+        ctx.fillRect(x + 0.4, Math.min(y, y0), Math.max(1, bw - 0.8), Math.max(1, Math.abs(y0 - y)));
+        // Beat 3: the old value as an outline, and a red mark under the channels that changed
+        if (beat === 2 && changed[k] && barMove > 0) {
+          ctx.globalAlpha = fadeAll * barMove;
+          ctx.strokeStyle = red;
+          ctx.lineWidth = 1;
+          const yo = yOf(full.g[k]);
+          ctx.strokeRect(x + 0.4, Math.min(yo, y0), Math.max(1, bw - 0.8), Math.abs(y0 - yo));
+          ctx.fillStyle = red;
+          ctx.fillRect(x, chartBottom + 4, bw, 3);
+        }
+      }
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+      ctx.fillStyle = faint;
+      ctx.textAlign = 'left';
+      ctx.fillText('ch 1', cx0, chartBottom + 18);
+      ctx.textAlign = 'right';
+      ctx.fillText(`${K}`, cx0 + chartW, chartBottom + 18);
+
+      const appear = ease(ramp(t, 0, 0.6));
+      // Lines from each channel's winner to its bar (beat 1 after the reveal, faded during beat 2)
+      const lineA = reveal * (1 - ease(ramp(t, T.drop + 0.2, T.drop + 1.0)));
+      if (lineA > 0) {
+        ctx.lineWidth = 0.8;
+        for (let k = 0; k < K; k++) {
+          const [px, py] = carXY(pts[full.win[k]]);
+          ctx.globalAlpha = fadeAll * lineA * 0.3;
+          ctx.strokeStyle = barColor(full.win[k]);
+          ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(cx0 + (k + 0.5) * bw, barTop[k]); ctx.stroke();
+        }
+      }
+      // Beat 3: lines to the changed channels, from the victim (fading) then from the new winners
+      if (beat === 2) {
+        ctx.lineWidth = 1;
+        const pulse = ease(ramp(t, T.kill + 0.4, T.kill + 0.9));
+        for (let k = 0; k < K; k++) {
+          if (full.win[k] !== victim) continue;
+          const from = barMove > 0 ? live.win[k] : victim;
+          const [px, py] = carXY(pts[from]);
+          ctx.globalAlpha = fadeAll * (barMove > 0 ? barMove : pulse * (1 - ramp(t, BAR_MOVE[0] - 0.4, BAR_MOVE[0]))) * 0.6;
+          ctx.strokeStyle = barMove > 0 ? barColor(from) : red;
+          ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(cx0 + (k + 0.5) * bw, barTop[k]); ctx.stroke();
+        }
+      }
+
+      // The blocks: h on every point, then the max over the points (re-run live while points leave)
+      {
+        const pal = iconPalette();
+        const midY = (chartTop + chartBottom) / 2;
+        const hAct = ramp(t, 0.3, 0.7) * (1 - ramp(t, 2.0, 2.5));
+        const leaving = beat === 1 ? ramp(t, T.drop + 0.4, T.drop + 0.8) * (1 - ramp(t, T.drop + 3.0, T.drop + 3.5))
+          : beat === 2 ? ramp(t, T.kill + 1.2, T.kill + 1.5) * (1 - ramp(t, BAR_MOVE[1], BAR_MOVE[1] + 0.5)) : 0;
+        const mAct = Math.max(ramp(t, 1.2, 1.6) * (1 - ramp(t, 3.4, 3.9)), leaving);
+        ctx.globalAlpha = fadeAll * appear;
+        if (narrow) {
+          const bx = carArea + 7, bw = 36, bh = 28, hy = midY - 52, my = midY + 6;
+          drawArrow(ctx, carArea - 8, hy + bh / 2, bx - 3, hy + bh / 2, pal);
+          drawBlock(ctx, 'mlp', bx, hy, bw, bh, pal, { label: 'h', shared: true, active: hAct, compact: true });
+          drawArrow(ctx, bx + bw / 2, hy + bh + 14, bx + bw / 2, my - 3, pal);
+          drawBlock(ctx, 'maxpool', bx, my, bw, bh, pal, { label: 'max', active: mAct, compact: true });
+          drawArrow(ctx, bx + bw + 2, my + bh / 2, cx0 - 3, my + bh / 2, pal);
+        } else {
+          const bw = 52, bh = 40, hx = carArea + 12, mx = hx + bw + 28, by = midY - bh / 2;
+          drawArrow(ctx, carArea - 8, midY, hx - 3, midY, pal);
+          drawBlock(ctx, 'mlp', hx, by, bw, bh, pal, { label: 'shared MLP h', sub: '3 → 64 → 64', shared: true, active: hAct });
+          drawArrow(ctx, hx + bw + 4, midY, mx - 3, midY, pal);
+          drawBlock(ctx, 'maxpool', mx, by, bw, bh, pal, { label: 'max pool', sub: 'over points', active: mAct });
+          drawArrow(ctx, mx + bw + 3, midY, cx0 - 4, midY, pal);
+        }
+        ctx.globalAlpha = fadeAll;
+      }
+
+      // Points: non-critical small and grey, critical large and coloured (after the reveal)
+      ctx.fillStyle = faint;
+      for (let i = 0; i < N; i++) {
+        if (isCrit.has(i)) continue;
+        // Removed points leave a faint ghost, so the car stays readable
+        const gone = ramp(t, leaveAt[i] - 0.3, leaveAt[i]);
+        const [px, py] = carXY(pts[i]);
+        ctx.globalAlpha = fadeAll * appear * (0.75 - 0.6 * gone);
+        ctx.fillRect(px - 0.9, py - 0.9, 1.8, 1.8);
+      }
+      for (const i of critical) {
+        const gone = ramp(t, leaveAt[i] - 0.4, leaveAt[i]);
+        if (gone >= 1) continue;
+        const [px, py] = carXY(pts[i]);
+        const rad = 1.2 + (narrow ? 1.8 : 2.6) * reveal;
+        ctx.globalAlpha = fadeAll * appear * (1 - gone);
+        ctx.fillStyle = reveal > 0 ? barColor(i) : faint;
+        ctx.beginPath(); ctx.arc(px, py, rad * (1 + gone), 0, Math.PI * 2); ctx.fill();
+        if (reveal > 0) {
+          ctx.globalAlpha = fadeAll * reveal * (1 - gone);
+          ctx.strokeStyle = dark ? '#0b1020' : '#ffffff';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+        // Beat 3: a red ring marks the critical point about to be removed
+        if (i === victim && beat === 2) {
+          ctx.globalAlpha = fadeAll * ease(ramp(t, T.kill + 0.4, T.kill + 0.9)) * (1 - gone);
+          ctx.strokeStyle = red;
+          ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(px, py, 9, 0, Math.PI * 2); ctx.stroke();
+        }
+      }
+      // After the removal: a red cross where the victim was
+      if (beat === 2 && t > leaveAt[victim] - 0.2) {
+        const [px, py] = carXY(pts[victim]);
+        ctx.globalAlpha = fadeAll * ramp(t, leaveAt[victim] - 0.2, leaveAt[victim] + 0.2);
+        ctx.strokeStyle = red;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(px - 5, py - 5); ctx.lineTo(px + 5, py + 5);
+        ctx.moveTo(px + 5, py - 5); ctx.lineTo(px - 5, py + 5);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.kill - 0.5); });
+    if (still) { frame(T.kill - 0.5); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

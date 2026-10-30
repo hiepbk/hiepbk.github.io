@@ -1,0 +1,287 @@
+---
+// SECOND's sparse convolution as gather → GEMM → scatter-add (Eq. 5 and Fig. 1 of the paper), on a small 2D
+// example: 6 active sites, a 3 × 3 submanifold kernel (outputs at the active sites), C_in = 3, C_out = 2.
+// Beat 1 builds the rule table R: for each kernel offset k, the (input index, output index) pairs it connects.
+// Beat 2 executes one offset: gather the listed input rows, multiply by W_k in one GEMM, scatter-add the
+// products into the listed output rows. Beat 3 loops over all offsets: only the pairs in the table are computed.
+// A schematic: the feature values are not shown, only which rows move where.
+---
+<canvas class="wt-canvas rule-table-canvas"
+  role="img" aria-label="Six active cells and a three by three kernel: for every kernel offset the rule table lists which input cell feeds which output cell; for each offset the listed inputs are gathered, multiplied by that offset's weight matrix in one matrix product, and added into the listed outputs"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+
+  const NX = 6, NY = 4;
+  const SITES = [[1, 0], [2, 0], [2, 1], [3, 1], [4, 1], [4, 2]]; // active sites (x, y), index = input and output index
+  const OFFS: number[][] = [];
+  for (let dy = 1; dy >= -1; dy--) for (let dx = -1; dx <= 1; dx++) OFFS.push([dx, dy]);
+  // Rule table: for offset k, pairs (input i, output j) with site(i) = site(j) + offset(k)
+  const RULES = OFFS.map(([dx, dy]) => {
+    const pairs: number[][] = [];
+    SITES.forEach(([x, y], j) => {
+      const i = SITES.findIndex(([a, b]) => a === x + dx && b === y + dy);
+      if (i >= 0) pairs.push([i, j]);
+    });
+    return pairs;
+  });
+  const KDEMO = RULES.findIndex((r, k) => k !== 4 && r.length === Math.max(...RULES.filter((_, q) => q !== 4).map((q) => q.length)));
+  const ARROW = ['↖', '↑', '↗', '←', '·', '→', '↙', '↓', '↘'];
+
+  const HEADLINE = [
+    'Rule table: for each kernel offset, which input feeds which output',
+    'One offset: gather the inputs, one GEMM with Wₖ, scatter-add the outputs',
+    'Loop over the 9 offsets: only the pairs in the table are computed',
+  ];
+  const HEADLINE_SHORT = ['Rule table: offset → (in, out) pairs', 'Gather → GEMM → scatter-add', 'All 9 offsets: only the listed pairs'];
+
+  document.querySelectorAll<HTMLCanvasElement>('.rule-table-canvas').forEach((canvas) => {
+    const ctx = canvas.getContext('2d')!;
+    const hue = (i: number) => (200 + i * 53) % 360;
+
+    // Beats: table · one offset · all offsets
+    const T = { table: 0, gemm: 9, loop: 18.5, end: 26 };
+    const BEATS = [T.table, T.gemm, T.loop];
+    const KT = 0.85; // seconds per offset while the table is built
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const cellBg = dark ? '#1f2737' : '#eef1f6';
+      const ink = dark ? '#ffffff' : '#111827';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.gemm ? 0 : t < T.loop ? 1 : 2;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const narrow = W < 520;
+      // Current offset: built one by one (beat 1), the demo offset (beat 2), looping fast (beat 3)
+      const kNow = beat === 0 ? Math.min(8, Math.floor(Math.max(0, t - 0.8) / KT)) : beat === 1 ? KDEMO : Math.min(8, Math.floor(Math.max(0, t - T.loop - 0.6) / 0.6));
+      const rowsDone = beat === 0 ? (t < 0.8 ? 0 : kNow + 1) : 9;
+      const loopDone = beat === 2 ? (t < T.loop + 0.6 ? 0 : kNow + 1) : 0;
+
+      // Layout: grid on the left, table / GEMM on the right
+      const top = narrow ? 84 : 94;
+      const cs = narrow ? 22 : 36;
+      const gx = narrow ? 6 : 24, gy = top + 8;
+      const gW = NX * cs;
+      const rx = gx + gW + (narrow ? 14 : 40), rW = W - rx - 6;
+
+      // Headline, titles, status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(narrow ? `Offset k = ${kNow}` : `Active sites, offset k = ${kNow} ${ARROW[kNow]}`, gx + gW / 2, 46, gW + 20);
+      ctx.fillText(beat === 0 ? (narrow ? 'Rule table R' : 'Rule table R (k: in → out)') : beat === 1 ? (narrow ? `Offset ${KDEMO}` : `Executing offset k = ${KDEMO}`) : (narrow ? 'All offsets' : 'Output features Y'), rx + rW / 2, 46, rW);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = rowsDone ? accent : text;
+      ctx.fillText(`${RULES[kNow].length} pair${RULES[kNow].length === 1 ? '' : 's'} for this offset`, gx + gW / 2, 64, gW + 20);
+      const pairsSoFar = RULES.slice(0, beat === 0 ? rowsDone : beat === 2 ? loopDone : 9).reduce((s, r) => s + r.length, 0);
+      const rNote = beat === 0 ? `${pairsSoFar} pairs` : beat === 1 ? (narrow ? `${RULES[KDEMO].length} rows × Wₖ` : `${RULES[KDEMO].length} gathered rows × Wₖ (3 × 2)`) : narrow ? `${pairsSoFar} pairs vs 9 × ${NX * NY}` : `${pairsSoFar} pairs computed · dense im2col: 9 × ${NX * NY} = ${9 * NX * NY}`;
+      ctx.fillText(rNote, rx + rW / 2, 64, rW);
+
+      // Grid with the active sites (index = input/output index)
+      ctx.textBaseline = 'middle';
+      for (let y = 0; y < NY; y++) for (let x = 0; x < NX; x++) {
+        ctx.globalAlpha = fadeAll;
+        ctx.fillStyle = cellBg;
+        ctx.fillRect(gx + x * cs + 0.5, gy + (NY - 1 - y) * cs + 0.5, cs - 1, cs - 1);
+      }
+      SITES.forEach(([x, y], i) => {
+        ctx.globalAlpha = fadeAll;
+        ctx.fillStyle = `hsl(${hue(i)} 65% ${dark ? 55 : 50}%)`;
+        ctx.fillRect(gx + x * cs + 2, gy + (NY - 1 - y) * cs + 2, cs - 4, cs - 4);
+        ctx.fillStyle = '#fff';
+        ctx.font = `600 ${narrow ? 10 : 13}px "IBM Plex Mono", monospace`;
+        ctx.fillText(String(i), gx + (x + 0.5) * cs, gy + (NY - 1 - y + 0.5) * cs + 0.5);
+      });
+      // Arrows of the current offset: from each output site to the input it reads
+      if (rowsDone > 0 || beat > 0) {
+        const [dx, dy] = OFFS[kNow];
+        for (const [i, j] of RULES[kNow]) {
+          const [xo, yo] = SITES[j], [xi, yi] = SITES[i];
+          const ax = gx + (xo + 0.5) * cs, ay = gy + (NY - 1 - yo + 0.5) * cs;
+          const bx = gx + (xi + 0.5) * cs, by = gy + (NY - 1 - yi + 0.5) * cs;
+          ctx.globalAlpha = fadeAll;
+          ctx.strokeStyle = ink;
+          ctx.lineWidth = 2;
+          if (dx === 0 && dy === 0) { ctx.strokeRect(ax - cs / 2 + 1, ay - cs / 2 + 1, cs - 2, cs - 2); continue; }
+          const ex = bx - (bx - ax) * 0.3, ey = by - (by - ay) * 0.3;
+          ctx.beginPath(); ctx.moveTo(ax + (bx - ax) * 0.22, ay + (by - ay) * 0.22); ctx.lineTo(ex, ey); ctx.stroke();
+          const ang = Math.atan2(ey - ay, ex - ax);
+          ctx.beginPath();
+          ctx.moveTo(ex, ey);
+          ctx.lineTo(ex - 6 * Math.cos(ang - 0.5), ey - 6 * Math.sin(ang - 0.5));
+          ctx.lineTo(ex - 6 * Math.cos(ang + 0.5), ey - 6 * Math.sin(ang + 0.5));
+          ctx.closePath();
+          ctx.fillStyle = ink;
+          ctx.fill();
+        }
+        // The 3 × 3 kernel footprint around output 2, for orientation
+        ctx.globalAlpha = fadeAll * 0.5;
+        ctx.strokeStyle = faint;
+        ctx.setLineDash([3, 3]);
+        ctx.lineWidth = 1;
+        const [kx, ky] = SITES[2];
+        ctx.strokeRect(gx + (kx - 1) * cs, gy + (NY - 2 - ky) * cs, 3 * cs, 3 * cs);
+        ctx.setLineDash([]);
+      }
+      ctx.globalAlpha = fadeAll;
+      ctx.fillStyle = faint;
+      ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+      ctx.fillText(narrow ? 'arrow: out → its input' : 'arrow: output → the input it reads', gx + gW / 2, gy + NY * cs + 14, gW + 30);
+
+      // Beat 1: the table, one row per offset
+      const tableA = beat === 0 ? 1 : 0;
+      if (tableA > 0) {
+        const rh = Math.min(narrow ? 19 : 24, (H - top - 16) / 9);
+        ctx.textAlign = 'left';
+        for (let k = 0; k < 9; k++) {
+          const y = top + k * rh + rh / 2;
+          ctx.globalAlpha = fadeAll * (k < rowsDone ? 1 : 0.3);
+          ctx.fillStyle = k === kNow && rowsDone ? accent : faint;
+          ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+          ctx.fillText(`k=${k} ${ARROW[k]}`, rx, y);
+          if (k >= rowsDone) continue;
+          RULES[k].forEach(([i, j], q) => {
+            const x = rx + (narrow ? 44 : 64) + q * (narrow ? 38 : 56);
+            ctx.fillStyle = `hsl(${hue(i)} 65% ${dark ? 60 : 42}%)`;
+            ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+            ctx.fillText(String(i), x, y);
+            ctx.fillStyle = faint;
+            ctx.fillText('→', x + (narrow ? 8 : 11), y);
+            ctx.fillStyle = `hsl(${hue(j)} 65% ${dark ? 60 : 42}%)`;
+            ctx.fillText(String(j), x + (narrow ? 19 : 26), y);
+          });
+        }
+      }
+
+      // Beats 2–3: gather → GEMM → scatter-add into Y
+      if (beat >= 1) {
+        const pairs = RULES[KDEMO];
+        const rh = narrow ? 18 : 24, cw = narrow ? 12 : 18;
+        const colX = [rx + (narrow ? 26 : 36), rx + rW * 0.36, rx + rW * 0.58, rx + rW * 0.8]; // G · W · P · Y  (centres)
+        const yTop = top + 14;
+        const stepA = (a: number, b: number) => (beat === 1 ? ease(ramp(t, T.gemm + a, T.gemm + b)) : 1);
+        const block = (cx: number, y: number, rows: number, cols: number, color: (r: number) => string, a: number) => {
+          ctx.globalAlpha = fadeAll * a;
+          for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+            ctx.fillStyle = color(r);
+            ctx.fillRect(cx - (cols * cw) / 2 + c * cw + 0.5, y + r * rh + 0.5, cw - 1, rh - 1);
+          }
+        };
+        const labels = (cx: number, s: string, a: number) => {
+          ctx.globalAlpha = fadeAll * a;
+          ctx.fillStyle = faint;
+          ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.fillText(s, cx, yTop - 8);
+        };
+        if (beat === 1) {
+          // Gather: the listed input rows (input colours)
+          const gA = stepA(0.6, 1.4);
+          labels(colX[0], narrow ? 'gather' : 'gathered inputs', gA);
+          block(colX[0], yTop, pairs.length, 3, (r) => `hsl(${hue(pairs[r][0])} 65% ${dark ? 55 : 58}%)`, gA);
+          ctx.globalAlpha = fadeAll * gA;
+          ctx.fillStyle = text;
+          ctx.textAlign = 'right';
+          ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+          pairs.forEach(([i], r) => ctx.fillText(`in ${i}`, colX[0] - (3 * cw) / 2 - 4, yTop + r * rh + rh / 2));
+          // × W_k
+          const wA = stepA(2.0, 2.6);
+          labels(colX[1], `W${'₀₁₂₃₄₅₆₇₈'[KDEMO]} (3 × 2)`, wA);
+          block(colX[1], yTop, 3, 2, () => (dark ? '#3b3361' : '#ddd6fe'), wA);
+          ctx.globalAlpha = fadeAll * wA;
+          ctx.fillStyle = heading;
+          ctx.textAlign = 'center';
+          ctx.font = `600 ${narrow ? 12 : 15}px "IBM Plex Sans", sans-serif`;
+          ctx.fillText('×', (colX[0] + 1.5 * cw + colX[1] - cw) / 2, yTop + rh);
+          // = products (one GEMM)
+          const pA = stepA(3.4, 4.0);
+          ctx.globalAlpha = fadeAll * pA;
+          ctx.fillText('=', (colX[1] + cw + colX[2] - cw) / 2, yTop + rh);
+          labels(colX[2], narrow ? 'GEMM' : 'one GEMM', pA);
+          block(colX[2], yTop, pairs.length, 2, () => (dark ? '#4c3d8f' : '#c4b5fd'), pA);
+          // Scatter-add arrows into Y
+          const sA = stepA(5.0, 6.2);
+          if (sA > 0) {
+            ctx.globalAlpha = fadeAll * sA;
+            ctx.strokeStyle = accent;
+            ctx.lineWidth = 1.5;
+            pairs.forEach(([, j], r) => {
+              const y0 = yTop + r * rh + rh / 2, y1 = yTop + j * rh + rh / 2;
+              const x0 = colX[2] + cw + 2, x1 = colX[3] - cw - 4;
+              ctx.beginPath(); ctx.moveTo(x0, y0); ctx.bezierCurveTo((x0 + x1) / 2, y0, (x0 + x1) / 2, y1, x1, y1); ctx.stroke();
+              ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x1 - 5, y1 - 3); ctx.lineTo(x1 - 5, y1 + 3); ctx.closePath(); ctx.fillStyle = accent; ctx.fill();
+            });
+            ctx.textAlign = 'center';
+            ctx.fillStyle = accent;
+            ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+            ctx.fillText('scatter-add', (colX[2] + colX[3]) / 2, yTop + 6 * rh + 14);
+          }
+        }
+        // Y: one row per output site, accumulating one contribution per pair
+        const contrib = new Array(SITES.length).fill(0);
+        const kMax = beat === 1 ? (ramp(t, T.gemm + 6.2, T.gemm + 6.6) > 0 ? -1 : -2) : loopDone;
+        if (beat === 1 && kMax === -1) for (const [, j] of RULES[KDEMO]) contrib[j] = 1;
+        if (beat === 2) RULES.slice(0, kMax).forEach((r) => r.forEach(([, j]) => contrib[j]++));
+        const yX = beat === 1 ? colX[3] : rx + rW * 0.4;
+        labels(yX, narrow ? 'Y (out)' : 'Y: outputs (6 × 2)', 1);
+        ctx.textAlign = 'right';
+        SITES.forEach((_, j) => {
+          const y = yTop + j * rh;
+          ctx.globalAlpha = fadeAll;
+          ctx.fillStyle = cellBg;
+          ctx.fillRect(yX - cw + 0.5, y + 0.5, 2 * cw - 1, rh - 1);
+          const f = contrib[j] / 9;
+          ctx.fillStyle = `hsl(${hue(j)} 65% ${dark ? 55 : 50}%)`;
+          ctx.globalAlpha = fadeAll * Math.min(1, 0.2 + f * 2.5) * (contrib[j] ? 1 : 0);
+          ctx.fillRect(yX - cw + 0.5, y + 0.5, 2 * cw - 1, rh - 1);
+          ctx.globalAlpha = fadeAll;
+          ctx.fillStyle = text;
+          ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+          ctx.textAlign = 'left';
+          ctx.fillText(beat === 2 ? `out ${j}: ${contrib[j]} term${contrib[j] === 1 ? '' : 's'}` : `out ${j}`, yX + cw + 5, y + rh / 2);
+        });
+      }
+      ctx.textBaseline = 'alphabetic';
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.gemm + 7.5); });
+    if (still) { frame(T.gemm + 7.5); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

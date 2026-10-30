@@ -1,0 +1,368 @@
+---
+// "Multi-view images + 2D CNN" (MVCNN): the real car rendered by 4 virtual cameras into coarse depth images.
+// Beat 1 renders the views (orthographic, 24 × 16 pixels, nearest point wins), beat 2 runs a shared 2D CNN
+// per view and pools over the views into one label, beat 3 shows what the images lose: points that are the
+// nearest in no pixel of any view, and one pixel that collapses a whole ray of points.
+// Everything is computed here at build time; the CNN in beat 2 is schematic (no network is run).
+import { loadCar } from '../../lib/walkthroughData';
+
+const COLS = 24, ROWS = 16;
+const HALF = 2.6; // half-width of each image in metres (the half-height is HALF · ROWS / COLS)
+const EL = (25 * Math.PI) / 180; // camera elevation
+const AZ = [0, 90, 180, 270]; // camera azimuths in the car frame (0 = front, 90 = left side), degrees
+const pts = loadCar();
+const N = pts.length;
+const c = [0, 1, 2].map((k) => (Math.min(...pts.map((p) => p[k])) + Math.max(...pts.map((p) => p[k]))) / 2);
+
+const seen = new Array<boolean>(N).fill(false);
+let ray = { view: 0, col: 0, row: 0, idx: [] as number[] };
+const views = AZ.map((deg, view) => {
+  const a = (deg * Math.PI) / 180, ca = Math.cos(a), sa = Math.sin(a), ce = Math.cos(EL), se = Math.sin(EL);
+  // Per pixel: all points that land in it, and the nearest one (smallest depth)
+  const cells = new Map<number, { idx: number[]; near: number; d: number }>();
+  pts.forEach(([u, v, z], i) => {
+    const x = u - c[0], y = v - c[1], h = z - c[2];
+    const right = -x * sa + y * ca;
+    const fwd = x * ca + y * sa;
+    const up = -fwd * se + h * ce;
+    const depth = -(fwd * ce + h * se); // distance along the viewing direction (smaller = closer)
+    const col = Math.floor(((right + HALF) / (2 * HALF)) * COLS);
+    const row = Math.floor(((HALF * ROWS / COLS - up) / (2 * HALF * ROWS / COLS)) * ROWS);
+    if (col < 0 || col >= COLS || row < 0 || row >= ROWS) throw new Error('MultiViewFigure: point outside the image');
+    const k = row * COLS + col, e = cells.get(k);
+    if (!e) cells.set(k, { idx: [i], near: i, d: depth });
+    else { e.idx.push(i); if (depth < e.d) { e.d = depth; e.near = i; } }
+  });
+  for (const e of cells.values()) seen[e.near] = true;
+  // The ray shown in beat 3: the pixel of view 1 that collapses the most points
+  if (view === 0) {
+    for (const [k, e] of cells) if (e.idx.length > ray.idx.length) ray = { view, col: k % COLS, row: Math.floor(k / COLS), idx: e.idx };
+  }
+  // Depth image: nearest depth per pixel, normalised to 0 (near) … 1 (far); -1 = empty
+  const ds = [...cells.values()].map((e) => e.d);
+  const lo = Math.min(...ds), hi = Math.max(...ds);
+  const img = new Array<number>(COLS * ROWS).fill(-1);
+  for (const [k, e] of cells) img[k] = Math.round(((e.d - lo) / (hi - lo)) * 100) / 100;
+  return { az: deg, img, pixels: cells.size };
+});
+const hidden = seen.map((s, i) => (s ? -1 : i)).filter((i) => i >= 0);
+const data = { pts, c, COLS, ROWS, HALF, EL, views, hidden, ray };
+---
+<canvas class="wt-canvas multiview-canvas" data-mv={JSON.stringify(data)}
+  role="img" aria-label={`A car rendered by four virtual cameras into small depth images, which a 2D CNN classifies as a car; but ${hidden.length} of its ${N} points are not the nearest point in any pixel of any view, and one pixel collapses ${ray.idx.length} points along its ray`}></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../lib/figureClock';
+  import { iconPalette, drawBlock } from '../../lib/figureIcons';
+  type P = [number, number, number];
+  type MV = {
+    pts: P[]; c: number[]; COLS: number; ROWS: number; HALF: number; EL: number;
+    views: { az: number; img: number[]; pixels: number }[];
+    hidden: number[]; ray: { view: number; col: number; row: number; idx: number[] };
+  };
+
+  const HEADLINE = [
+    'Render the object from several viewpoints',
+    'A 2D CNN reads each view, the views are pooled → one label',
+    'But depth is flattened: 3D geometry and per-point labels are lost',
+  ];
+  const HEADLINE_SHORT = [
+    'Render the object from several views',
+    'CNN per view, pooled → one label',
+    'Depth flattened: points are lost',
+  ];
+  const fmt = (n: number) => n.toLocaleString('en-US');
+
+  document.querySelectorAll<HTMLCanvasElement>('.multiview-canvas').forEach((canvas) => {
+    const g: MV = JSON.parse(canvas.dataset.mv!);
+    const ctx = canvas.getContext('2d')!;
+    const { pts, c, COLS, ROWS, views, ray } = g;
+    const N = pts.length, V = views.length;
+    const isHidden = new Uint8Array(N);
+    g.hidden.forEach((i) => (isHidden[i] = 1));
+    const inRay = new Uint8Array(N);
+    ray.idx.forEach((i) => (inRay[i] = 1));
+
+    // Camera frame per view: D points from the car to the camera, R = image right, U = image up
+    const ce = Math.cos(g.EL), se = Math.sin(g.EL);
+    const frames = views.map(({ az }) => {
+      const a = (az * Math.PI) / 180, ca = Math.cos(a), sa = Math.sin(a);
+      return { D: [ca * ce, sa * ce, se], R: [-sa, ca, 0], U: [-ca * se, -sa * se, ce] };
+    });
+    const RC = 4.0; // camera distance from the car centre, metres (for the drawing only)
+
+    // Beats: render 4 views · CNN + view pooling → "car" · what is lost
+    const T = { render: 0, cnn: 7, lost: 13, end: 21.5 };
+    const BEATS = [T.render, T.cnn, T.lost];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    const camAt = (k: number) => 0.6 + k * 0.8; // camera k appears and renders its view
+    const cnnAt = (k: number) => T.cnn + 0.4 + k * 0.35;
+    const POOL_AT = T.cnn + 2.0, LABEL_AT = T.cnn + 2.7;
+    const RECOLOR_AT = T.lost + 0.4, RAY_AT = T.lost + 1.8;
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const ink = dark ? '#ffffff' : '#111827';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.cnn ? 0 : t < T.lost ? 1 : 2;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const narrow = W < 520;
+
+      // Layout: car + cameras on the left, a column of depth images, then CNN → view pool → label
+      const top = 80, gap = narrow ? 5 : 8;
+      const cell = Math.min((H - top - 6 - gap * (V - 1)) / V / ROWS, (W * 0.2) / COLS);
+      const tw = cell * COLS, th = cell * ROWS;
+      const carR = W * (narrow ? 0.37 : 0.44);
+      const tx = carR + (narrow ? 4 : 12);
+      const thumbY = (k: number) => top + k * (th + gap);
+      const pipeX = tx + tw + (narrow ? 8 : 22), pipeW = W - pipeX - (narrow ? 2 : 12);
+      const cnnW = narrow ? 26 : 44, poolW = narrow ? 28 : 46;
+      const cnnX = pipeX, poolX = pipeX + cnnW + (narrow ? 10 : (pipeW - cnnW - poolW) * 0.35);
+      const labelX = (poolX + poolW + W) / 2;
+      const midY = top + (V * th + (V - 1) * gap) / 2;
+
+      // Car seen from above at an angle, in a gentle sway; cameras live in the car frame
+      const a = 0.2 + 0.1 * Math.sin(time * 0.5);
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const S = Math.min((carR - 32) / (2 * RC), (H - top - 6) / (RC * (0.8 * se + 0.6 * ce) + 2.0));
+      const carCx = carR / 2, carCy = top + 8 + RC * (0.8 * se + 0.6 * ce) * S;
+      const proj = (u: number, v: number, z: number) => {
+        const x = u - c[0], y = v - c[1];
+        const ur = x * ca - y * sa, vr = x * sa + y * ca;
+        return [carCx + ur * S, carCy - (z - c[2]) * S * 0.8 + vr * S * 0.6] as const;
+      };
+
+      // Headline, titles, status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      const nCams = beat === 0 ? Math.min(V, Math.max(0, Math.floor((t - camAt(0)) / 0.8) + 1)) : V;
+      ctx.fillText(narrow ? `${nCams} cameras` : `Car · ${nCams} cameras`, carCx, 40, carR - 4);
+      ctx.fillText(narrow ? 'Views' : 'Depth images', tx + tw / 2, 40, tw + 16);
+      ctx.fillText(narrow ? 'MVCNN' : '2D CNN + view pool', pipeX + pipeW / 2, 40, pipeW);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      const carNote = [
+        `${fmt(N)} points`,
+        `${fmt(N)} points`,
+        narrow ? `${fmt(g.hidden.length)} / ${fmt(N)} in no view` : `${fmt(g.hidden.length)} of ${fmt(N)} points in no view`,
+      ][beat];
+      const viewNote = [
+        `${COLS}×${ROWS}, nearest wins`,
+        'same CNN for all',
+        narrow ? `1 px ← ${ray.idx.length} pts` : `1 pixel ← ${ray.idx.length} points`,
+      ][beat];
+      const pipeNote = [
+        '—',
+        narrow ? 'max over views' : 'max over views → car',
+        narrow ? 'no label per point' : 'one label, none per point',
+      ][beat];
+      ctx.fillText(carNote, carCx, 58, carR - 4);
+      ctx.fillText(viewNote, tx + tw / 2, 58, narrow ? tw + 30 : tw + 40);
+      ctx.fillText(pipeNote, pipeX + pipeW / 2, 58, pipeW);
+
+      // Points: one colour until beat 3, then red = never the nearest point in any view
+      const recolor = ease(ramp(t, RECOLOR_AT, RECOLOR_AT + 0.8));
+      const rayOn = ease(ramp(t, RAY_AT, RAY_AT + 0.6));
+      for (let i = 0; i < N; i++) {
+        const [x, y] = proj(pts[i][0], pts[i][1], pts[i][2]);
+        const lost = recolor > 0 && isHidden[i];
+        ctx.globalAlpha = fadeAll * (lost ? 0.35 + 0.5 * recolor : beat === 2 ? 0.9 : 0.75);
+        ctx.fillStyle = lost && recolor > 0.5 ? red : accent;
+        ctx.fillRect(x - 0.9, y - 0.9, 1.8, 1.8);
+      }
+
+      // Cameras: body square + lens wedge pointing at the car, numbered like their images
+      const centre = proj(c[0], c[1], c[2]);
+      frames.forEach((f, k) => {
+        const on = ease(ramp(t, camAt(k), camAt(k) + 0.4));
+        if (on <= 0) return;
+        const [px, py] = proj(c[0] + RC * f.D[0], c[1] + RC * f.D[1], c[2] + RC * f.D[2]);
+        const dx = centre[0] - px, dy = centre[1] - py, len = Math.hypot(dx, dy) || 1;
+        const ux = dx / len, uy = dy / len;
+        // Rendering flash: a faint cone towards the car while the image fills
+        const flash = ramp(t, camAt(k), camAt(k) + 0.3) * (1 - ramp(t, camAt(k) + 0.7, camAt(k) + 1.1));
+        if (flash > 0) {
+          ctx.globalAlpha = fadeAll * 0.18 * flash;
+          ctx.fillStyle = accent;
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          ctx.lineTo(centre[0] - uy * 2.6 * S, centre[1] + ux * 2.6 * S);
+          ctx.lineTo(centre[0] + uy * 2.6 * S, centre[1] - ux * 2.6 * S);
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.globalAlpha = fadeAll * on;
+        ctx.fillStyle = heading;
+        const b = narrow ? 4 : 5;
+        ctx.fillRect(px - b, py - b, 2 * b, 2 * b);
+        ctx.beginPath();
+        ctx.moveTo(px + ux * b, py + uy * b);
+        ctx.lineTo(px + ux * (b + 6) - uy * 5, py + uy * (b + 6) + ux * 5);
+        ctx.lineTo(px + ux * (b + 6) + uy * 5, py + uy * (b + 6) - ux * 5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = text;
+        ctx.fillText(String(k + 1), px - ux * 13, py - uy * 13 + 4);
+      });
+
+      // Beat 3: the ray behind the highlighted pixel of view 1, and the points it collapses
+      if (rayOn > 0) {
+        const f = frames[ray.view];
+        const r = ((ray.col + 0.5) / COLS) * 2 * g.HALF - g.HALF;
+        const uH = g.HALF * ROWS / COLS;
+        const up = uH - ((ray.row + 0.5) / ROWS) * 2 * uH;
+        const at = (s: number) => proj(
+          c[0] + r * f.R[0] + up * f.U[0] + s * f.D[0],
+          c[1] + r * f.R[1] + up * f.U[1] + s * f.D[1],
+          c[2] + r * f.R[2] + up * f.U[2] + s * f.D[2],
+        );
+        const p0 = at(RC), p1 = at(-RC * 0.8);
+        ctx.globalAlpha = fadeAll * rayOn * 0.8;
+        ctx.strokeStyle = ink;
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = fadeAll * rayOn;
+        ctx.fillStyle = ink;
+        for (const i of ray.idx) {
+          const [x, y] = proj(pts[i][0], pts[i][1], pts[i][2]);
+          ctx.beginPath(); ctx.arc(x, y, 2.2, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+
+      // Depth images (fill column by column as the camera renders), numbered
+      views.forEach((view, k) => {
+        const y0 = thumbY(k);
+        const on = ramp(t, camAt(k) + 0.2, camAt(k) + 0.9);
+        ctx.globalAlpha = fadeAll * (on > 0 ? 1 : 0.5);
+        ctx.strokeStyle = faint;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(tx - 0.5, y0 - 0.5, tw + 1, th + 1);
+        ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+        ctx.textAlign = 'right';
+        ctx.fillStyle = text;
+        ctx.fillText(String(k + 1), tx - 3, y0 + 10);
+        if (on <= 0) return;
+        const cols = Math.ceil(on * COLS);
+        ctx.globalAlpha = fadeAll;
+        for (let row = 0; row < ROWS; row++) {
+          for (let col = 0; col < cols; col++) {
+            const d = view.img[row * COLS + col];
+            ctx.fillStyle = d < 0 ? (dark ? '#1e2533' : '#eef1f6') : dark ? `hsl(222 50% ${78 - d * 48}%)` : `hsl(222 55% ${30 + d * 52}%)`;
+            ctx.fillRect(tx + col * cell, y0 + row * cell, cell - 0.4, cell - 0.4);
+          }
+        }
+        // Beat 3: the highlighted pixel
+        if (k === ray.view && rayOn > 0) {
+          ctx.globalAlpha = fadeAll * rayOn;
+          ctx.strokeStyle = red;
+          ctx.lineWidth = 2;
+          ctx.strokeRect(tx + ray.col * cell - 1.5, y0 + ray.row * cell - 1.5, cell + 3, cell + 3);
+        }
+      });
+
+      // Beat 2: shared CNN per view → view pooling (max) → "car ✓"
+      const arrow = (x0: number, y0: number, x1: number, y1: number) => {
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+        const ang = Math.atan2(y1 - y0, x1 - x0);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x1 - 6 * Math.cos(ang - 0.45), y1 - 6 * Math.sin(ang - 0.45));
+        ctx.lineTo(x1 - 6 * Math.cos(ang + 0.45), y1 - 6 * Math.sin(ang + 0.45));
+        ctx.closePath(); ctx.fill();
+      };
+      const dim = beat === 2 ? 0.55 : 1;
+      views.forEach((_, k) => {
+        const on = ease(ramp(t, cnnAt(k), cnnAt(k) + 0.5));
+        if (on <= 0) return;
+        const cy = thumbY(k) + th / 2;
+        ctx.globalAlpha = fadeAll * on * dim;
+        ctx.strokeStyle = faint; ctx.fillStyle = faint; ctx.lineWidth = 1;
+        arrow(tx + tw + 2, cy, cnnX - 2, cy);
+        // The shared 2D CNN on this view, lit while it runs
+        const bh = th * 0.8;
+        ctx.globalAlpha = fadeAll * on * dim;
+        drawBlock(ctx, 'conv2d', cnnX, cy - bh / 2, cnnW, bh, iconPalette(), {
+          active: ramp(t, cnnAt(k), cnnAt(k) + 0.3) * (1 - ramp(t, cnnAt(k) + 1.2, cnnAt(k) + 1.6)),
+        });
+        const pool = ease(ramp(t, POOL_AT, POOL_AT + 0.5));
+        if (pool > 0) {
+          ctx.globalAlpha = fadeAll * pool * dim;
+          ctx.strokeStyle = faint; ctx.fillStyle = faint; ctx.lineWidth = 1;
+          arrow(cnnX + cnnW + 2, cy, poolX - 2, midY + (cy - midY) * 0.25);
+        }
+      });
+      const pool = ease(ramp(t, POOL_AT, POOL_AT + 0.5));
+      if (pool > 0) {
+        ctx.globalAlpha = fadeAll * pool * dim;
+        drawBlock(ctx, 'maxpool', poolX, midY - poolW / 2, poolW, poolW, iconPalette(), {
+          label: narrow ? 'pool' : 'view pool', active: ramp(t, POOL_AT, POOL_AT + 0.3) * (1 - ramp(t, LABEL_AT + 0.8, LABEL_AT + 1.4)), compact: narrow,
+        });
+      }
+      const label = ease(ramp(t, LABEL_AT, LABEL_AT + 0.5));
+      if (label > 0) {
+        ctx.globalAlpha = fadeAll * label;
+        ctx.strokeStyle = faint; ctx.fillStyle = faint; ctx.lineWidth = 1;
+        arrow(poolX + poolW + 2, midY, labelX - (narrow ? 18 : 28), midY);
+        ctx.font = `600 ${narrow ? 13 : 16}px Sora, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = heading;
+        ctx.fillText('car', labelX, midY + 5);
+        ctx.fillStyle = dark ? '#4ade80' : '#16a34a';
+        ctx.fillText('✓', labelX, midY - (narrow ? 14 : 18));
+        // Beat 3: one label for the whole object, nothing to read back per point
+        const q = ease(ramp(t, RAY_AT + 0.6, RAY_AT + 1.2));
+        if (q > 0) {
+          ctx.globalAlpha = fadeAll * q;
+          ctx.fillStyle = red;
+          ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+          ctx.fillText(narrow ? 'point i?' : 'label of point i?', labelX, midY + (narrow ? 26 : 32), W - poolX - poolW - 4);
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const STILL_AT = T.end - 1.5;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(STILL_AT); });
+    if (still) { frame(STILL_AT); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

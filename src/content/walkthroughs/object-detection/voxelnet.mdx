@@ -1,0 +1,263 @@
+---
+title: "VoxelNet: a mini-PointNet inside every voxel"
+category: object-detection
+order: 3
+summary: "VoxelNet replaced hand-crafted bird's-eye-view features with a small PointNet run inside each voxel, followed by 3D convolutions and an RPN — the first end-to-end LiDAR detector and the template for every voxel-based method after it."
+date: 2026-10-30
+draft: true
+paper:
+  title: "VoxelNet: End-to-End Learning for Point Cloud Based 3D Object Detection"
+  authors: "Yin Zhou, Oncel Tuzel"
+  venue: CVPR 2018
+  links:
+    - name: arXiv
+      url: https://arxiv.org/abs/1711.06396
+---
+
+import Figure from '../../../components/walkthroughs/Figure.astro';
+import ArchitectureFigure from '../../../components/walkthroughs/voxelnet/ArchitectureFigure.astro';
+import VfeFigure from '../../../components/walkthroughs/voxelnet/VfeFigure.astro';
+import VoxelBufferFigure from '../../../components/walkthroughs/voxelnet/VoxelBufferFigure.astro';
+import MiddleLayersFigure from '../../../components/walkthroughs/voxelnet/MiddleLayersFigure.astro';
+import HandcraftedFigure from '../../../components/walkthroughs/voxelnet/HandcraftedFigure.astro';
+import PointNetScaleFigure from '../../../components/walkthroughs/voxelnet/PointNetScaleFigure.astro';
+import DensityFigure from '../../../components/walkthroughs/voxelnet/DensityFigure.astro';
+import SparseDenseFigure from '../../../components/walkthroughs/voxelnet/SparseDenseFigure.astro';
+
+## Motivation & Main Contribution
+
+- The two roads so far:
+  - **PointNet** learns features from raw points, but was shown on ~1k points; a LiDAR scan has ~100k.
+  - **MV3D** scales to whole scenes by flattening LiDAR into images, but its BEV features are **hand-crafted**.
+- VoxelNet joins the roads: group points into voxels, run a **mini-PointNet inside each voxel**, then use convolutions
+  and an RPN as in image detection.
+- **Main contributions:**
+  - **Voxel Feature Encoding (VFE)** layer: point-wise features + a max-pooled voxel feature, concatenated and stacked.
+  - A single-stage network trained **end-to-end from raw points** — no manual feature engineering, no camera.
+  - An efficient implementation that processes only non-empty voxels.
+- Reading tip: VoxelNet's three blocks — voxel encoder → middle layers → BEV RPN — are the skeleton of SECOND,
+  PointPillars, PV-RCNN and Voxel R-CNN.
+
+## Challenges at the Time
+
+- **Hand-crafted encodings** (MV3D's height/density/intensity maps, voxel statistics) are an information bottleneck:
+  they fix in advance what the network may see.
+
+<Figure>
+  <HandcraftedFigure />
+  <span slot="caption">A hand-crafted encoding on the real car of the scan, seen from the side and cut into 0.5 m
+  bird's-eye-view columns: only the maximum height (red bars) and the number of points per column survive. The second
+  layout is constructed to keep the top point and the count of every column, so it gets exactly the same numbers. A
+  feature computed from all points (here a per-column height profile, standing in for the learned VFE feature) tells
+  the two apart.</span>
+</Figure>
+
+- **PointNet does not scale as-is:** applying it (and its feature-transform networks) to ~100k points costs too much
+  compute and memory.
+
+<Figure>
+  <PointNetScaleFigure />
+  <span slot="caption">PointNet's shared MLP keeps an $n \times 1024$ activation. For one object ($n = 1{,}024$) that is
+  4 MB; for a whole scan ($n \approx 100{,}000$) it is 410 MB, and the multiply-adds grow from 0.44 G to 43 G (float32,
+  classification network with both T-Nets, rough counts). One max over the whole scene then leaves a single vector for
+  all five cars. The scan shown is the 66k-point PandaSet frame of the home page.</span>
+</Figure>
+
+- **Highly variable density:** near points are dense, far points sparse; a voxel may hold hundreds of points or none.
+
+<Figure>
+  <DensityFigure />
+  <span slot="caption">Points per voxel on the real scan, with VoxelNet's voxels of 0.2 × 0.2 × 0.4 m (each 1 m cell
+  shows its busiest voxel, log colour scale). The stored scan is subsampled, so absolute counts are lower than in a raw
+  sweep; the fall-off with distance is what matters. VoxelNet answers it by sampling at most T = 35 points per voxel.</span>
+</Figure>
+
+- **RPNs need dense tensors**, but a LiDAR scan is a sparse, unordered set — more than 90% of voxels are empty.
+
+<Figure>
+  <SparseDenseFigure />
+  <span slot="caption">The scan as an unordered list of points, then voxelized with VoxelNet's voxel size over ±40 m and
+  4 m of height: about one voxel in a hundred holds a point (the window shows one horizontal slice of the grid,
+  0.6–1.0 m above the road). Convolutions need the full grid with zeros in the empty cells: over the whole volume about
+  nine in ten positions of a 3 × 3 × 3 kernel see only zeros.</span>
+</Figure>
+
+## Naive Questions
+
+- **Why not run PointNet on the whole scene?**
+  Too many points; and one global max pool would mix all objects together.
+- **Why voxels, if PointNet's whole point was avoiding grids?**
+  The grid is only used to *group* points; the feature inside each voxel is still learned from raw points.
+- **What does one VFE layer add over a plain shared MLP?**
+  Each point sees the voxel's max-pooled summary, so points within a voxel interact.
+- **Why cap a voxel at $T$ points?**
+  To fix the tensor size, save compute and reduce the imbalance between dense and sparse voxels.
+- **Why 3D convolutions before the RPN?**
+  To aggregate context across neighbouring voxels and collapse the height axis into channels.
+- **Is it fast?**
+  No: 225 ms per frame, of which the 3D convolutions take 170 ms — the problem SECOND attacks next.
+
+## Key Idea
+
+> **Key idea.** Partition space into voxels, learn each voxel's feature with a small PointNet (VFE), then treat the
+> voxel grid like an image volume: 3D convolutions, then a 2D RPN in bird's-eye view.
+
+One VFE layer on a voxel with points $p_1, \dots, p_t$:
+
+$$
+f_i = \operatorname{FCN}(\hat p_i), \qquad
+\tilde f = \operatorname{MAX}_{i=1..t}\, f_i, \qquad
+f_i^{out} = [\, f_i \,;\, \tilde f \,] \in \mathbb{R}^{2m}
+$$
+
+- $\hat p_i = [x_i, y_i, z_i, r_i, x_i - v_x, y_i - v_y, z_i - v_z]$: the point, its reflectance $r_i$, and its offset
+  from the voxel centroid $(v_x, v_y, v_z)$.
+- $\operatorname{FCN}$: Linear → BatchNorm → ReLU, shared by all points of all voxels ($f_i \in \mathbb{R}^m$).
+- $\operatorname{MAX}$: element-wise max over the points of the voxel — PointNet's symmetric function.
+
+## Dive into Model Architecture & Key Components
+
+<Figure>
+  <ArchitectureFigure />
+  <span slot="caption">VoxelNet end to end (after Fig. 2 of the paper), stage by stage, with the tensor shapes of the car network: a learned voxel encoder, 3D convolutions that fold the height into channels, and a 2D region proposal network.</span>
+</Figure>
+
+### VoxelNet, layer by layer (car network)
+
+Range $[-3, 1] \times [-40, 40] \times [0, 70.4]$ m along $Z, Y, X$; voxel size $0.4 \times 0.2 \times 0.2$ m;
+$T = 35$ points per voxel (Section 3.1):
+
+| Stage | Operation | Shape |
+|---|---|---|
+| Input | points inside the camera view | ~100k $\times$ 4 $(x, y, z, r)$ |
+| Grouping | voxel grid $D' \times H' \times W'$ | $10 \times 400 \times 352$ cells |
+| Point input | random sample ≤ $T$ points per voxel, add centroid offsets | $K \times 35 \times 7$ |
+| VFE-1(7, 32) | Linear $7 \to 16$, max, concat | $K \times 35 \times 32$ |
+| VFE-2(32, 128) | Linear $32 \to 64$, max, concat | $K \times 35 \times 128$ |
+| FCN + max | Linear to 128, max over points | $K \times 128$ |
+| Scatter | sparse 4D tensor | $128 \times 10 \times 400 \times 352$ |
+| Conv3D(128, 64, 3, (2,1,1), (1,1,1)) | | $64 \times 5 \times 400 \times 352$ |
+| Conv3D(64, 64, 3, (1,1,1), (0,1,1)) | | $64 \times 3 \times 400 \times 352$ |
+| Conv3D(64, 64, 3, (2,1,1), (1,1,1)) | | $64 \times 2 \times 400 \times 352$ |
+| Reshape | merge height into channels | $128 \times 400 \times 352$ |
+| RPN (3 blocks + deconv, concat) | see below | $768 \times 200 \times 176$ |
+| Heads | $1 \times 1$ convs | scores $2 \times 200 \times 176$, regression $14 \times 200 \times 176$ |
+
+$K$: number of non-empty voxels. Intermediate depths 5 and 3 follow from the stated strides and paddings.
+
+### Stacked VFE: PointNet, made local
+
+- VFE-$i(c_{in}, c_{out})$: the linear layer is $c_{in} \times (c_{out}/2)$; concatenation with the max-pooled
+  vector doubles it back to $c_{out}$.
+- Stacking two VFE layers lets points in a voxel exchange information twice before the final max → the voxel feature.
+- Compared with **PointNet** (walkthrough 01): same shared MLP + max pool, but on ≤ 35 points of one voxel
+  instead of a whole object, and with no T-Net.
+
+<Figure>
+  <VfeFigure />
+  <span slot="caption">One VFE layer inside a real voxel ($0.2 \times 0.2 \times 0.4$ m) on a parked car. The FCN is a tiny random one with $m = 4$ instead of 16, but every number is computed from it; $r$ is shown as "–" because this scan stores no reflectance. After the concatenation, every point carries both its own feature and the voxel's summary.</span>
+</Figure>
+
+> **Builds on.** PointNet's shared MLP + max pool ([walkthrough 01](/walkthroughs/object-detection/pointnet/)), now applied to the points of one voxel.
+
+### Convolutional middle layers and the RPN
+
+- Each middle layer: Conv3D → BN → ReLU. Strides of 2 along $Z$ shrink depth $10 \to 2$; the result is reshaped
+  into a BEV feature map — from here on it is image detection.
+
+<Figure>
+  <MiddleLayersFigure />
+  <span slot="caption">The three middle layers on one real side slice through a parked car (32 voxels along $x$, 10 along $z$; the kernel's $3 \times 3$ footprint in this slice is outlined). Each layer computes every cell, though most of them see only zeros — this is where 170 of the 225 ms go. The last two depth cells are folded into channels, giving a BEV map.</span>
+</Figure>
+- **RPN** (Fig. 4): three blocks, each starting with a stride-2 conv:
+  - Block 1: Conv2D(128, 128, 3, 2, 1) + 3 × Conv2D(128, 128, 3, 1, 1)
+  - Block 2: Conv2D(128, 128, 3, 2, 1) + 5 × Conv2D(128, 128, 3, 1, 1)
+  - Block 3: Conv2D(128, 256, 3, 2, 1) + 5 × Conv2D(256, 256, 3, 1, 1)
+  - Each block output is deconvolved to $256 \times H'/2 \times W'/2$ and concatenated → 768 channels.
+- **Anchors (car):** one size $l = 3.9$, $w = 1.6$, $h = 1.56$ m at $z = -1.0$ m, rotations $0°$ and $90°$.
+  Positive if BEV IoU > 0.6 (or highest for a GT), negative below 0.45.
+- Pedestrian / cyclist: range $[-3, 1] \times [-20, 20] \times [0, 48]$ m, $T = 45$, first RPN stride 1 instead of 2,
+  thresholds 0.5 / 0.35.
+
+> **Builds on.** MV3D's bird's-eye-view RPN with $0°/90°$ anchors and the camera crop ([walkthrough 02](/walkthroughs/object-detection/mv3d/)), and Faster R-CNN's anchor-based RPN.
+
+### Loss: oriented boxes, regressed directly
+
+- Box $(x_c, y_c, z_c, l, w, h, \theta)$; residuals with $d^a = \sqrt{(l^a)^2 + (w^a)^2}$, the anchor's base diagonal:
+
+$$
+\Delta x = \frac{x_c^g - x_c^a}{d^a},\;
+\Delta y = \frac{y_c^g - y_c^a}{d^a},\;
+\Delta z = \frac{z_c^g - z_c^a}{h^a},\;
+\Delta s = \log\frac{s^g}{s^a}\ (s \in \{l, w, h\}),\;
+\Delta\theta = \theta^g - \theta^a
+$$
+
+$$
+L = \alpha \frac{1}{N_{pos}} \sum_i L_{cls}(p_i^{pos}, 1) + \beta \frac{1}{N_{neg}} \sum_j L_{cls}(p_j^{neg}, 0)
+  + \frac{1}{N_{pos}} \sum_i L_{reg}(u_i, u_i^*)
+$$
+
+- $L_{cls}$: binary cross-entropy; $L_{reg}$: Smooth $\ell_1$; $\alpha = 1.5$, $\beta = 1$.
+- $\Delta\theta = \theta^g - \theta^a$ penalises a box flipped by $\pi$ heavily even though it covers the same
+  space — SECOND fixes this with a sine loss.
+
+### Efficient implementation: only non-empty voxels
+
+- One pass over the points with a **hash table** keyed by voxel coordinate fills a $K \times T \times 7$ buffer
+  and a voxel-coordinate buffer — $O(n)$.
+- VFE runs densely on this buffer on the GPU; padded (empty) point slots are reset to zero after each concatenation.
+- The voxel features are then **scattered back into a dense grid** — so the 3D convolutions still visit every empty cell.
+
+<Figure>
+  <VoxelBufferFigure />
+  <span slot="caption">The voxel input pipeline on a real $2 \times 1.2$ m patch next to the sensor (one 0.4 m height layer, $0.2$ m voxels, $T = 35$). Because the points are shuffled first, "keep the first 35" is a random sample. The encoder works only on the $K$ non-empty voxels, but the scatter puts them back into a dense grid.</span>
+</Figure>
+
+### Data augmentation
+
+- **Per-box:** rotate each GT box and its points by $\Delta\theta \sim U[-\pi/10, \pi/10]$, translate by
+  $\mathcal{N}(0, 1)$ per axis; undo on collision.
+- **Global scaling** $U[0.95, 1.05]$ and **global rotation** $U[-\pi/4, \pi/4]$ around $Z$.
+- Needed because KITTI has fewer than 4,000 training clouds and VoxelNet trains from scratch.
+
+## Conclusion
+
+### Results
+
+KITTI validation, 3D AP (Table 2 of the paper; train/val split of 3,712 / 3,769 frames; IoU 0.7 for car, 0.5 for pedestrian):
+
+| Method | Data | Car Easy <span class="better-up">↑</span> | Car Mod. <span class="better-up">↑</span> | Car Hard <span class="better-up">↑</span> | Ped. Easy <span class="better-up">↑</span> | Ped. Mod. <span class="better-up">↑</span> | Ped. Hard <span class="better-up">↑</span> |
+|---|---|---|---|---|---|---|---|
+| Mono3D | Mono | 2.53 | 2.31 | 2.31 | N/A | N/A | N/A |
+| 3DOP | Stereo | 6.55 | 5.07 | 4.10 | N/A | N/A | N/A |
+| VeloFCN | LiDAR | 15.20 | 13.66 | 15.98 | N/A | N/A | N/A |
+| MV3D (BEV+FV) | LiDAR | 71.19 | 56.60 | 55.30 | N/A | N/A | N/A |
+| MV3D (BEV+FV+RGB) | LiDAR + Mono | 71.29 | 62.68 | 56.56 | N/A | N/A | N/A |
+| HC-baseline (MV3D-style features, same RPN) | LiDAR | 71.73 | 59.75 | 55.69 | 43.95 | 40.18 | 37.48 |
+| **VoxelNet** | LiDAR | **81.97** | **65.46** | **62.85** | **57.86** | **53.42** | **48.87** |
+
+- **Validation, BEV AP** (Table 1): car 89.60 / 84.81 / 78.57.
+- **Test, car** (Table 3): 3D AP **77.47 / 65.11 / 57.73**, BEV AP 89.35 / 79.26 / 77.39.
+- **Runtime:** 225 ms per frame (voxel input 5 ms, feature net 20 ms, middle layers 170 ms, RPN 30 ms) on a Titan X.
+
+### Pros and Cons
+
+- **Pros**
+  - First end-to-end detector from raw points: no hand-crafted features, no camera.
+  - The voxel encoder (PointNet applied per voxel) beats hand-crafted BEV features, most of all for pedestrians and cyclists.
+  - Its encoder → middle layers → BEV RPN skeleton became the template for SECOND, PointPillars, PV-RCNN and Voxel R-CNN.
+- **Cons**
+  - Dense 3D convolutions over a grid that is more than 90% empty take 170 of 225 ms.
+  - Direct angle regression ($\Delta\theta = \theta^g - \theta^a$) punishes a box flipped by $\pi$ heavily.
+  - Few positive anchors per frame, and less than 4,000 training clouds.
+
+### Future Work
+
+- Skip the empty voxels in the middle layers (sparse convolution).
+- An angle loss that respects the $\pi$ symmetry of a box, and more positives per training frame.
+
+### Next
+
+- [**SECOND**](/walkthroughs/object-detection/second/) keeps VoxelNet's pipeline but computes the 3D convolutions only
+  where there are points, fixes the angle loss with a sine, and pastes extra objects into training scenes.

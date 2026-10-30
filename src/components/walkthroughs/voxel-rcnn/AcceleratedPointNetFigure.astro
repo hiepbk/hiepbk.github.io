@@ -1,0 +1,230 @@
+---
+// "Accelerated PointNet module" (Voxel R-CNN, Fig. 4), schematic. Beat 1: the original module groups K voxels per
+// grid point, then applies the FC layer W to all M·K rows of (C + 3). Beat 2: W is split into W_F (features) and
+// W_C (coordinates). Beat 3: W_F runs once per voxel, before the query. Beat 4: after the query only W_C on the
+// 3 relative coordinates, added to the gathered features, then the max pool. Cost numbers use C = 64 (last 3D
+// stage), C′ = 32 (KITTI) and M·K = 10·N — the paper only says M·K is an order of magnitude larger than N.
+const C = 64, C2 = 32, R = 10;
+const data = { costA: R * (C + 3) * C2, costB: C * C2 + R * 3 * C2, C, C2, R };
+---
+<canvas class="wt-canvas accpn-canvas" data-accpn={JSON.stringify(data)}
+  role="img" aria-label="The accelerated PointNet module of Voxel R-CNN: instead of applying the first fully connected layer to every grouped voxel with its coordinates, its weight is split into a feature part applied once per voxel before the query and a coordinate part applied to the three relative coordinates after it; the two are added before the max pool"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  import { iconPalette, drawBlock, drawArrow } from '../../../lib/figureIcons';
+  type Data = { costA: number; costB: number; C: number; C2: number; R: number };
+
+  const HEADLINE = [
+    'Original: group K voxels per grid point, then the FC layer W',
+    'Split W into W_F (features) and W_C (coordinates)',
+    'W_F runs once per voxel — before the query',
+    'After the query only W_C on 3 coordinates; add, then max pool',
+  ];
+  const HEADLINE_SHORT = [
+    'Original: group, then FC on every row',
+    'Split W = [W_F | W_C]',
+    'W_F once per voxel, before the query',
+    'Then W_C on 3 coordinates; add; max',
+  ];
+  const fmt = (n: number) => n.toLocaleString('en-US');
+
+  document.querySelectorAll<HTMLCanvasElement>('.accpn-canvas').forEach((canvas) => {
+    const d: Data = JSON.parse(canvas.dataset.accpn!);
+    const ctx = canvas.getContext('2d')!;
+
+    // Beats: original · split · W_F first · W_C + add
+    const T = { orig: 0, split: 5.0, wf: 9.5, wc: 14.0, end: 20.5 };
+    const BEATS = [T.orig, T.split, T.wf, T.wc];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const orange = dark ? '#ffb86b' : '#d9730d';
+      const pal = iconPalette();
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.split ? 0 : t < T.wf ? 1 : t < T.wc ? 2 : 3;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+
+      // Layout: two rows (original, accelerated) + the coordinate branch, 8 columns
+      const narrow = W < 520;
+      const top = 76, lx = narrow ? 0 : 92;
+      const cw = (W - lx - 4) / 8;
+      const X = (c: number) => lx + cw * (c + 0.5);
+      const yA = top + (narrow ? 34 : 34), yB = top + (narrow ? 112 : 136), yC = top + (narrow ? 166 : 206);
+      const bw = Math.min(narrow ? 34 : 50, cw - 8), bh = narrow ? 26 : 36;
+
+      // Headline, title and status line
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText('First layer of the PointNet module, per grid point', W / 2, 40, W - 8);
+      const note = narrow
+        ? [`∝ M·K·(C+3)·C′`, 'W ∈ ℝ^(C′ × (C+3))', `∝ N·C·C′`, `∝ N·C·C′ + M·K·3·C′`][beat]
+        : ['FLOPs ∝ M · K · (C + 3) · C′', 'W ∈ ℝ^(C′ × (C+3)) = [W_F ∈ ℝ^(C′ × C) | W_C ∈ ℝ^(C′ × 3)]', 'FLOPs ∝ N · C · C′ — N voxels, not M · K grouped rows', 'FLOPs ∝ N · C · C′ + M · K · 3 · C′'][beat];
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(note, W / 2, 58, W - 8);
+
+      // Helpers: a tensor (text in a box), a fixed operation (dashed), arrows
+      const tensor = (c: number, y: number, s: string, on: number, alpha: number) => {
+        const w = cw - 6, h = narrow ? 20 : 24;
+        ctx.globalAlpha = fadeAll * alpha;
+        ctx.fillStyle = dark ? '#121826' : '#ffffff';
+        ctx.strokeStyle = on > 0.5 ? accent : faint; ctx.lineWidth = 1 + on;
+        ctx.fillRect(X(c) - w / 2, y - h / 2, w, h); ctx.strokeRect(X(c) - w / 2, y - h / 2, w, h);
+        ctx.font = `600 ${narrow ? 8 : 10}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = on > 0.5 ? accent : heading; ctx.textAlign = 'center';
+        ctx.fillText(s, X(c), y + 3.5, w - 4);
+      };
+      const op = (c: number, y: number, s: string, alpha: number) => {
+        ctx.globalAlpha = fadeAll * alpha;
+        ctx.fillStyle = dark ? '#121826' : '#ffffff';
+        ctx.strokeStyle = heading; ctx.lineWidth = 1.2; ctx.setLineDash([4, 3]);
+        ctx.beginPath(); ctx.roundRect(X(c) - bw / 2, y - bh / 2, bw, bh, 6); ctx.fill(); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.font = `600 ${narrow ? 8 : 10}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = text; ctx.textAlign = 'center';
+        ctx.fillText(s, X(c), y + 3.5, bw - 4);
+      };
+      const half = (k: 'b' | 't') => (k === 'b' ? bw / 2 : (cw - 6) / 2);
+      const arrow = (c0: number, y0: number, k0: 'b' | 't', c1: number, y1: number, k1: 'b' | 't', alpha: number) =>
+        drawArrow(ctx, X(c0) + half(k0) + 2, y0, X(c1) - half(k1) - 2, y1, pal, undefined, fadeAll * alpha);
+      const blk = (kind: 'mlp' | 'maxpool', c: number, y: number, label: string, act: number, alpha: number, shared = true) =>
+        drawBlock(ctx, kind, X(c) - bw / 2, y - bh / 2, bw, bh, pal, { label, shared: kind === 'mlp' && shared, active: act, alpha: fadeAll * alpha, compact: true });
+
+      // Row labels
+      if (!narrow) {
+        ctx.textAlign = 'left';
+        ctx.globalAlpha = fadeAll;
+        ctx.font = `600 12px Sora, sans-serif`;
+        ctx.fillStyle = beat === 0 ? accent : heading;
+        ctx.fillText('Original', 4, yA - 4);
+        ctx.fillStyle = beat >= 2 ? accent : heading;
+        ctx.fillText('Accelerated', 4, yB - 4);
+        ctx.font = `500 10px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = text;
+        ctx.fillText(`∝ ${fmt(d.costA)}·N`, 4, yA + 12);
+        if (beat === 3) { ctx.fillStyle = accent; ctx.fillText(`∝ ${fmt(d.costB)}·N`, 4, yB + 12); }
+      } else {
+        ctx.textAlign = 'left';
+        ctx.globalAlpha = fadeAll;
+        ctx.font = `600 10px Sora, sans-serif`;
+        ctx.fillStyle = heading;
+        ctx.fillText(`Original  ∝ ${fmt(d.costA)}·N`, 2, yA - bh / 2 - 6);
+        ctx.fillText(beat === 3 ? `Accelerated  ∝ ${fmt(d.costB)}·N` : 'Accelerated', 2, yB - bh / 2 - 6);
+      }
+
+      // Row A: N × C → query → MK × (C+3) → W → max → η
+      const aA = beat === 0 ? 1 : 0.55;
+      const flowA = beat === 0 ? ease(ramp(t, 0.5, 3.5)) : 1;
+      tensor(0, yA, 'N × C', 0, aA);
+      arrow(0, yA, 't', 3, yA, 'b', aA);
+      op(3, yA, 'query', aA);
+      arrow(3, yA, 'b', 4, yA, 't', aA);
+      tensor(4, yA, 'MK × (C+3)', beat === 0 && flowA > 0.3 ? 1 : 0, aA);
+      arrow(4, yA, 't', 5, yA, 'b', aA);
+      blk('mlp', 5, yA, 'W', beat === 0 ? ease(ramp(t, 1.8, 2.6)) : 0, aA);
+      arrow(5, yA, 'b', 6, yA, 'b', aA);
+      blk('maxpool', 6, yA, 'max', beat === 0 ? ease(ramp(t, 2.8, 3.4)) : 0, aA);
+      arrow(6, yA, 'b', 7, yA, 't', aA);
+      tensor(7, yA, 'η', 0, aA);
+
+      // Beat 2: W splits into W_F | W_C, dashed lines to where they will run
+      if (beat >= 1) {
+        const sp = ease(ramp(t, T.split + 0.4, T.split + 1.4));
+        const mw = narrow ? 40 : 60, mh = narrow ? 16 : 20, mx = X(5) - mw / 2, my = (yA + yB) / 2 - mh / 2;
+        const fw = mw * (d.C / (d.C + 3)) - 2 * sp;
+        ctx.globalAlpha = fadeAll * (beat === 1 ? 1 : 0.45);
+        ctx.fillStyle = accent; ctx.globalAlpha *= 0.35;
+        ctx.fillRect(mx, my, fw, mh);
+        ctx.fillStyle = orange;
+        ctx.fillRect(mx + fw + 4 * sp, my, mw - fw - 4 * sp + 2 * sp, mh);
+        ctx.globalAlpha = fadeAll * (beat === 1 ? 1 : 0.45);
+        ctx.strokeStyle = heading; ctx.lineWidth = 1;
+        ctx.strokeRect(mx, my, fw, mh); ctx.strokeRect(mx + fw + 4 * sp, my, mw - fw - 2 * sp, mh);
+        ctx.font = `600 ${narrow ? 8 : 10}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = heading; ctx.textAlign = 'center';
+        ctx.fillText('W_F', mx + fw / 2, my + mh / 2 + 3.5);
+        ctx.textAlign = 'left';
+        ctx.fillText('W_C', mx + mw + 6 * sp, my + mh / 2 + 3.5);
+        if (beat === 1 && sp > 0.9) {
+          ctx.setLineDash([3, 3]); ctx.strokeStyle = accent;
+          ctx.beginPath(); ctx.moveTo(mx, my + mh / 2); ctx.lineTo(X(1) + bw / 2, yB - bh / 2); ctx.stroke();
+          ctx.strokeStyle = orange;
+          ctx.beginPath(); ctx.moveTo(mx + mw, my + mh); ctx.lineTo(X(4) + bw / 2, yC - bh / 2); ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+
+      // Row B: N × C → W_F → N × C′ → query → MK × C′ → + → max → η; branch: MK × 3 → W_C → +
+      const aB = beat >= 2 ? 1 : 0.35;
+      const aC = beat === 3 ? 1 : 0.35;
+      tensor(0, yB, 'N × C', 0, aB);
+      arrow(0, yB, 't', 1, yB, 'b', aB);
+      blk('mlp', 1, yB, 'W_F', beat === 2 ? ease(ramp(t, T.wf + 0.6, T.wf + 1.4)) : 0, aB);
+      arrow(1, yB, 'b', 2, yB, 't', aB);
+      tensor(2, yB, 'N × C′', beat === 2 && t > T.wf + 1.6 ? 1 : 0, aB);
+      arrow(2, yB, 't', 3, yB, 'b', aB);
+      op(3, yB, 'query', aB);
+      arrow(3, yB, 'b', 4, yB, 't', aB);
+      tensor(4, yB, 'MK × C′', beat === 2 && t > T.wf + 2.8 ? 1 : 0, aB);
+      arrow(4, yB, 't', 5, yB, 'b', aC);
+      op(5, yB, '+', aC);
+      arrow(5, yB, 'b', 6, yB, 'b', aC);
+      blk('maxpool', 6, yB, 'max', beat === 3 ? ease(ramp(t, T.wc + 2.2, T.wc + 2.8)) : 0, aC);
+      arrow(6, yB, 'b', 7, yB, 't', aC);
+      tensor(7, yB, 'η', beat === 3 && t > T.wc + 3 ? 1 : 0, aC);
+      tensor(3, yC, 'MK × 3', 0, aC);
+      arrow(3, yC, 't', 4, yC, 'b', aC);
+      blk('mlp', 4, yC, 'W_C', beat === 3 ? ease(ramp(t, T.wc + 0.6, T.wc + 1.4)) : 0, aC);
+      drawArrow(ctx, X(4) + bw / 2 + 2, yC, X(5), yB + bh / 2 + 2, pal, undefined, fadeAll * aC);
+
+      if (beat === 3) {
+        ctx.globalAlpha = fadeAll * ease(ramp(t, T.wc + 3.0, T.wc + 3.6));
+        ctx.font = `600 ${narrow ? 10 : 13}px Sora, sans-serif`;
+        ctx.fillStyle = accent; ctx.textAlign = 'center';
+        ctx.fillText(`≈ ${(d.costA / d.costB).toFixed(1)}× fewer FLOPs here`, narrow ? X(1) : X(6.5), yC + 4, narrow ? cw * 2.8 : cw * 3);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.end - 1); });
+    if (still) { frame(T.end - 1); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

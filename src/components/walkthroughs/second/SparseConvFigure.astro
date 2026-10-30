@@ -1,0 +1,241 @@
+---
+// Regular sparse convolution vs submanifold sparse convolution (the two layer types in SECOND's middle extractor),
+// in 2D on the real bird's-eye occupancy of a parked car (0.4 m cells). Beat 1: only the active sites are stored.
+// Beat 2: a regular sparse conv makes an output active wherever its 3 × 3 kernel touches an active input, so the
+// active set dilates with every layer. Beat 3: a submanifold conv computes outputs only at the active input sites,
+// so the set stays the same however many layers are stacked. The bar chart counts active sites per layer.
+import { loadScene, pointsInBox } from '../../../lib/walkthroughFiguresA';
+
+const NX = 20, NY = 11, C = 0.4;
+const car = loadScene().boxes[1];
+const X0 = car.center[0] - (NX * C) / 2, Y0 = car.center[1] - (NY * C) / 2;
+const act = new Set<number>();
+for (const p of pointsInBox(car, 0.15)) {
+  const ix = Math.floor((p.x - X0) / C), iy = Math.floor((p.y - Y0) / C);
+  if (ix >= 0 && ix < NX && iy >= 0 && iy < NY) act.add(iy * NX + ix);
+}
+const data = { nx: NX, ny: NY, act: [...act].sort((a, b) => a - b) };
+---
+<canvas class="wt-canvas sparse-conv-canvas" data-sc={JSON.stringify(data)}
+  role="img" aria-label="On the occupied cells of a car seen from above, a regular sparse convolution activates every cell its kernel touches, so the active set grows layer after layer, while a submanifold convolution keeps outputs only at the active input cells, so the set does not grow"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  import { drawBlock, iconPalette } from '../../../lib/figureIcons';
+  type Sc = { nx: number; ny: number; act: number[] };
+
+  const LAYERS = 3;
+  const HEADLINE = [
+    'Sparse data: store and compute only the active sites',
+    'Regular sparse conv: active wherever the kernel touches an input',
+    'Submanifold conv: outputs only at the active input sites',
+  ];
+  const HEADLINE_SHORT = ['Store only the active sites', 'Sparse conv: the active set grows', 'Submanifold: the active set stays'];
+
+  document.querySelectorAll<HTMLCanvasElement>('.sparse-conv-canvas').forEach((canvas) => {
+    const d: Sc = JSON.parse(canvas.dataset.sc!);
+    const ctx = canvas.getContext('2d')!;
+    const NX = d.nx, NY = d.ny;
+    // Active sets after each regular sparse conv layer (3 × 3 dilation)
+    const sets: Set<number>[] = [new Set(d.act)];
+    for (let l = 0; l < LAYERS; l++) {
+      const s = new Set<number>();
+      for (const c of sets[l]) {
+        const x = c % NX, y = Math.floor(c / NX);
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx, yy = y + dy;
+          if (xx >= 0 && xx < NX && yy >= 0 && yy < NY) s.add(yy * NX + xx);
+        }
+      }
+      sets.push(s);
+    }
+    // For each layer: when (fraction of the sweep) each output site is first touched by the kernel
+    const firstTouch = sets.slice(0, LAYERS).map((inS) => {
+      const list = [...inS], m = new Map<number, number>();
+      list.forEach((c, i) => {
+        const x = c % NX, y = Math.floor(c / NX);
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx, yy = y + dy, o = yy * NX + xx;
+          if (xx >= 0 && xx < NX && yy >= 0 && yy < NY && !m.has(o)) m.set(o, (i + 1) / list.length);
+        }
+      });
+      return m;
+    });
+
+    // Beats: storage · regular sparse conv (3 layers) · submanifold (3 layers)
+    const T = { store: 0, sparse: 5, sub: 15, end: 24 };
+    const BEATS = [T.store, T.sparse, T.sub];
+    const L1 = 4.2, LN = 2.4; // layer 1 is swept slowly; layers 2–3 appear faster
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    const layerStart = (base: number, l: number) => base + 0.6 + (l === 0 ? 0 : L1 + (l - 1) * LN);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const cellBg = dark ? '#1f2737' : '#eef1f6';
+      const actCol = dark ? '#ff6b6b' : '#e5484d';
+      const subCol = dark ? '#3fd6cc' : '#0d9488';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.sparse ? 0 : t < T.sub ? 1 : 2;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const narrow = W < 520;
+
+      // Which layer is on screen, and how far its sweep has got
+      const base = BEATS[beat];
+      let layer = 0, prog = 0;
+      if (beat > 0) {
+        for (let l = 0; l < LAYERS; l++) if (t >= layerStart(base, l)) layer = l + 1;
+        if (layer > 0) prog = ramp(t, layerStart(base, layer - 1), layerStart(base, layer - 1) + (layer === 1 ? L1 : LN) - 0.4);
+      }
+      const inSet = beat === 1 ? sets[Math.max(0, layer - 1)] : sets[0];
+      const outSet = beat === 1 ? sets[layer] : sets[0];
+
+      // Layout: grid on the left, bar chart on the right
+      const chartW = narrow ? 112 : 200;
+      const gx0 = narrow ? 4 : 16, gw = W - chartW - gx0 - (narrow ? 14 : 44);
+      const top = narrow ? 86 : 96;
+      
+      const blkW = narrow ? 30 : 72; // room for the conv block on the left
+      const cs2 = Math.min((gw - blkW) / NX, (H - top - 14) / NY);
+      const cs = cs2;
+      const gx = gx0 + blkW + (gw - blkW - cs2 * NX) / 2, gy = top;
+      const cx0 = W - chartW;
+
+      // Headline, titles, status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, base + 0.05, base + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      const gTitle = beat === 0 ? (narrow ? 'Car, top view' : 'A car, top view (0.4 m cells)') : layer === 0 ? 'Input' : `${beat === 1 ? (narrow ? 'Sparse' : 'Sparse conv') : narrow ? 'Submanifold' : 'Submanifold conv'}, layer ${layer}`;
+      ctx.fillText(gTitle, gx0 + gw / 2, 46, gw);
+      ctx.fillText(narrow ? 'Active sites' : 'Active sites per layer', cx0 + chartW / 2, 46, chartW);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      const cnt = beat === 0 ? sets[0].size : Math.round(inSet.size + (outSet.size - inSet.size) * prog);
+      const gNote = beat === 0 ? (narrow ? `${sets[0].size} of ${NX * NY} cells` : `${sets[0].size} of ${NX * NY} cells active`) : beat === 1 ? (narrow ? `${cnt} active` : `${cnt} active · the set dilates`) : (narrow ? `${sets[0].size} active` : `${sets[0].size} active · the set is fixed`);
+      ctx.fillText(gNote, gx0 + gw / 2, 64, gw);
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(narrow ? 'red sparse · teal subm.' : 'red: sparse · teal: submanifold', cx0 + chartW / 2, 64, chartW);
+
+      // The layer: a 3 × 3 conv block (regular sparse in beat 2, submanifold in beat 3)
+      if (beat > 0) {
+        const pal = iconPalette();
+        const bw2 = narrow ? 26 : 52, bh2 = narrow ? 24 : 38;
+        drawBlock(ctx, 'conv2d', gx0, gy + (NY * cs) / 2 - bh2 / 2, bw2, bh2, pal, { label: narrow ? undefined : beat === 1 ? 'sparse' : 'submanifold', sub: narrow ? undefined : '3 × 3', active: prog > 0 && prog < 1 ? 0.8 : 0, alpha: fadeAll, compact: true });
+      }
+      // Grid cells
+      for (let y = 0; y < NY; y++) for (let x = 0; x < NX; x++) {
+        const c = y * NX + x, px = gx + x * cs, py = gy + (NY - 1 - y) * cs;
+        ctx.globalAlpha = fadeAll;
+        ctx.fillStyle = cellBg;
+        ctx.fillRect(px + 0.5, py + 0.5, cs - 1, cs - 1);
+        const isIn = inSet.has(c), isOut = outSet.has(c);
+        if (isIn) {
+          ctx.fillStyle = beat === 2 ? subCol : actCol;
+          ctx.globalAlpha = fadeAll * (beat === 1 && layer > 0 ? 0.85 : 1);
+          ctx.fillRect(px + 0.5, py + 0.5, cs - 1, cs - 1);
+        } else if (isOut && beat === 1) {
+          // New output sites appear as the kernel passes the inputs that create them
+          const a = prog >= 1 ? 1 : prog >= (firstTouch[layer - 1].get(c) ?? 1) ? 1 : 0;
+          ctx.globalAlpha = fadeAll * a;
+          ctx.fillStyle = actCol;
+          ctx.globalAlpha *= 0.55;
+          ctx.fillRect(px + 0.5, py + 0.5, cs - 1, cs - 1);
+          ctx.globalAlpha = fadeAll * a;
+          ctx.strokeStyle = actCol;
+          ctx.lineWidth = 1;
+          ctx.strokeRect(px + 1, py + 1, cs - 2, cs - 2);
+        }
+      }
+      // Beat 1: the stored list (index per active site)
+      if (beat === 0) {
+        const a = fadeAll * ease(ramp(t, 1.2, 1.8));
+        ctx.globalAlpha = a;
+        ctx.fillStyle = dark ? '#0b0f17' : '#ffffff';
+        ctx.font = `600 ${Math.max(7, cs * 0.42)}px "IBM Plex Mono", monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        [...sets[0]].forEach((c, i) => {
+          const x = c % NX, y = Math.floor(c / NX);
+          ctx.fillText(String(i), gx + (x + 0.5) * cs, gy + (NY - 1 - y + 0.5) * cs + 0.5, cs - 2);
+        });
+        ctx.textBaseline = 'alphabetic';
+      }
+      // The 3 × 3 kernel visiting the active inputs of the current layer
+      if (beat > 0 && layer > 0 && prog > 0 && prog < 1) {
+        const list = [...inSet];
+        const c = list[Math.min(list.length - 1, Math.floor(prog * list.length))];
+        const x = c % NX, y = Math.floor(c / NX);
+        ctx.globalAlpha = fadeAll;
+        ctx.strokeStyle = dark ? '#ffffff' : '#111827';
+        ctx.lineWidth = 1.6;
+        if (beat === 1) ctx.strokeRect(gx + (x - 1) * cs, gy + (NY - 2 - y) * cs, 3 * cs, 3 * cs);
+        else ctx.strokeRect(gx + x * cs, gy + (NY - 1 - y) * cs, cs, cs);
+      }
+
+      // Bar chart: active sites after layers 0..3, regular sparse (red) vs submanifold (teal)
+      const chartTop = top + 14, chartBottom = H - 26, maxV = sets[LAYERS].size;
+      const bw = (chartW - 20) / (LAYERS + 1) / 2 - 2;
+      for (let l = 0; l <= LAYERS; l++) {
+        const x = cx0 + 6 + l * ((chartW - 20) / (LAYERS + 1));
+        const sparseA = l === 0 ? 1 : beat === 1 ? ramp(t, layerStart(T.sparse, l - 1) + 0.3, layerStart(T.sparse, l - 1) + 0.9) : beat === 2 ? 1 : 0;
+        const subA = l === 0 ? 1 : beat === 2 ? ramp(t, layerStart(T.sub, l - 1) + 0.3, layerStart(T.sub, l - 1) + 0.9) : 0;
+        const bar = (v: number, a: number, col: string, off: number) => {
+          if (a <= 0) return;
+          const h = ((chartBottom - chartTop) * v) / maxV;
+          ctx.globalAlpha = fadeAll * a;
+          ctx.fillStyle = col;
+          ctx.fillRect(x + off, chartBottom - h, bw, h);
+          ctx.fillStyle = text;
+          ctx.font = `500 ${narrow ? 8 : 10}px "IBM Plex Mono", monospace`;
+          ctx.textAlign = 'center';
+          ctx.fillText(String(v), x + off + bw / 2, chartBottom - h - 4);
+        };
+        bar(sets[l].size, sparseA, actCol, 0);
+        bar(sets[0].size, subA, subCol, bw + 2);
+        ctx.globalAlpha = fadeAll;
+        ctx.fillStyle = faint;
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillText(l === 0 ? 'in' : `L${l}`, x + bw + 1, chartBottom + 14);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.end - 1); });
+    if (still) { frame(T.end - 1); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

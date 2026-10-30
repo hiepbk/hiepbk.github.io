@@ -1,0 +1,373 @@
+---
+// "Shared MLP + max pool = order does not matter": six real car points (an N × 3 matrix) go through the same
+// tiny MLP h row by row, giving an N × C feature matrix whose column-wise max is the global vector. Beat 2
+// shuffles the rows: the features move with their points and the max vector is identical. Beat 3 flattens the
+// matrix into one long vector for an ordinary MLP: shuffling the rows changes its output.
+// The networks are tiny random ones (fixed seed), but every number shown is really computed from them.
+import { loadCar, farthestPointSample } from '../../lib/walkthroughData';
+
+const N = 6, C = 6;
+const r1 = (v: number) => Math.round(v * 10) / 10;
+const points = farthestPointSample(loadCar(), N).map((p) => p.map(r1));
+const perm = [2, 4, 0, 5, 1, 3]; // shuffled order: slot k holds row perm[k] (no row stays in place)
+
+const rng = (s: number) => () => (s = (s * 16807) % 2147483647) / 2147483647;
+// h: one ReLU layer 3 → C. Pick the first seed whose column maxima are clear (margin ≥ 0.2) and won by ≥ 5 different points
+let feats: number[][] = [];
+for (let seed = 1; seed < 5000; seed++) {
+  const rand = rng(seed);
+  const Wh = Array.from({ length: C }, () => [0, 1, 2].map(() => rand() * 2 - 1));
+  const bh = Array.from({ length: C }, () => rand() * 0.6);
+  const f = points.map((p) => Wh.map((w, j) => r1(Math.max(0, w[0] * p[0] + w[1] * p[1] + w[2] * p[2] + bh[j]))));
+  const winners = new Set<number>();
+  let ok = true;
+  for (let j = 0; j < C; j++) {
+    const col = f.map((row) => row[j]).sort((a, b) => b - a);
+    if (col[0] - col[1] < 0.2 || col[0] > 9.9) ok = false;
+    winners.add(f.findIndex((row) => row[j] === col[0]));
+  }
+  if (ok && winners.size >= 5) { feats = f; break; }
+}
+// g: one linear layer on the flattened 1 × 3N vector. Pick a seed whose output visibly changes (≥ 0.3 in every entry)
+const flat = (order: number[]) => order.flatMap((i) => points[i]);
+let G: number[][] = [];
+for (let seed = 1; seed < 5000; seed++) {
+  const rand = rng(seed);
+  const g = Array.from({ length: C }, () => Array.from({ length: 3 * N }, () => (rand() * 2 - 1) * 0.5));
+  const out = (v: number[]) => g.map((w) => r1(w.reduce((s, wk, k) => s + wk * v[k], 0)));
+  const a = out(flat(perm)), b = out(flat([0, 1, 2, 3, 4, 5]));
+  if (a.every((x, j) => Math.abs(x - b[j]) >= 0.3 && Math.abs(x) < 10 && Math.abs(b[j]) < 10)) { G = g; break; }
+}
+const data = { points, feats, perm, G };
+---
+<canvas class="wt-canvas symfn-canvas" data-net={JSON.stringify(data)}
+  role="img" aria-label="Six points go through the same small MLP h, then a max over the points gives one vector; shuffling the points leaves that vector unchanged, while flattening the points into one long vector for an ordinary MLP gives a different output after shuffling"></canvas>
+
+<style is:global>
+  .wt-figure .wt-canvas.symfn-canvas { height: 390px; }
+  @media (max-width: 600px) { .wt-figure .wt-canvas.symfn-canvas { height: 315px; } }
+</style>
+
+<script>
+  import { FIGURE_SPEED } from '../../lib/figureClock';
+  import { iconPalette, drawBlock } from '../../lib/figureIcons';
+  type Net = { points: number[][]; feats: number[][]; perm: number[]; G: number[][] };
+  // Main message per beat (shown in red at the top), then a status line under each title
+  const HEADLINE = [
+    'The same MLP h on every point, then a max over the points',
+    'Shuffle the points: the max vector stays exactly the same',
+    'Flatten + MLP instead: shuffling the points changes the output',
+  ];
+  const HEADLINE_SHORT = ['Same h on every point, then max', 'Shuffle: max vector is the same', 'Flatten + MLP: shuffle changes output'];
+  const LEFT_NOTE = ['real car points (x, y, z)', 'rows shuffled', 'rows shuffled again'];
+  const LEFT_NOTE_SHORT = ['car points', 'shuffled', 'shuffled again'];
+  const RIGHT_NOTE = ['max over each column', 'features move with their points', 'one weight per position in the list'];
+  const RIGHT_NOTE_SHORT = ['max per column', 'rows move along', 'weights tied to positions'];
+  const fmt = (v: number) => (Math.abs(v) < 0.05 ? '0' : v.toFixed(1));
+
+  document.querySelectorAll<HTMLCanvasElement>('.symfn-canvas').forEach((canvas) => {
+    const net: Net = JSON.parse(canvas.dataset.net!);
+    const ctx = canvas.getContext('2d')!;
+    const { points, feats, perm, G } = net;
+    const N = points.length, C = feats[0].length;
+    const ident = points.map((_, i) => i);
+
+    // Slot of each row: identity → shuffled (beat 2) → back to identity (beat 3)
+    const slotIn = (order: number[]) => { const s = new Array<number>(N); order.forEach((row, k) => (s[row] = k)); return s; };
+    const slotShuf = slotIn(perm);
+    // Column maxima and the row that wins each one
+    const winner = Array.from({ length: C }, (_, j) => feats.reduce((b, row, i) => (row[j] > feats[b][j] ? i : b), 0));
+    const maxVec = winner.map((i, j) => feats[i][j]);
+    // Flatten + linear layer, for a given row order
+    const flatOut = (order: number[]) => {
+      const v = order.flatMap((i) => points[i]);
+      return G.map((w) => Math.round(w.reduce((s, wk, k) => s + wk * v[k], 0) * 10) / 10);
+    };
+    const outBefore = flatOut(perm), outAfter = flatOut(ident);
+    const fMax = Math.max(...feats.flat());
+    const hue = (i: number) => (200 + i * 55) % 360; // identity colour of point i
+
+    // Beats: h + max · shuffle (same max) · flatten + MLP, shuffle (different output)
+    const T = { h: 0, shuffle: 8, flat: 14.5, end: 25 };
+    const BEATS = [T.h, T.shuffle, T.flat];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const green = dark ? '#4ade80' : '#16a34a';
+      const cellBg = dark ? '#232b3a' : '#eef1f6';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.shuffle ? 0 : t < T.flat ? 1 : 2;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+
+      // Layout: input matrix · h column · feature matrix (+ verdict on wide screens), centred
+      const narrow = W < 520;
+      const pal = iconPalette();
+      const inCellW = narrow ? 30 : 46, hW = narrow ? 50 : 110, fCellW = narrow ? 31 : 42, badgeW = narrow ? 0 : 96;
+      const inW = 10 + 3 * inCellW, fW = C * fCellW;
+      const x0 = Math.max(4, (W - (inW + hW + fW + badgeW)) / 2);
+      const hx = x0 + inW, fx = hx + hW, fEnd = fx + fW;
+      const top = narrow ? 92 : 98, rowH = narrow ? 20 : 25;
+      // Between the feature matrix and the max vector: the max-pool block
+      const poolH = narrow ? 30 : 38, poolY = top + N * rowH + (narrow ? 6 : 8);
+      const vecY = [top + N * rowH + (narrow ? 12 : 16) + poolH, 0];
+      vecY[1] = vecY[0] + rowH + 6;
+      const leftCx = x0 + inW / 2, rightCx = (hx + fEnd) / 2;
+
+      // Timeline
+      const shuf2 = ease(ramp(t, T.shuffle + 0.4, T.shuffle + 1.9));
+      const shuf3 = ease(ramp(t, T.flat + 4.5, T.flat + 6.0));
+      const slot = (i: number) => (beat === 0 ? i : beat === 1 ? i + (slotShuf[i] - i) * shuf2 : slotShuf[i] + (i - slotShuf[i]) * shuf3);
+      // While moving, rows step aside (down-movers right, up-movers left) so they do not pile on top of each other
+      const aside = (i: number) => (beat === 1 ? Math.sin(Math.PI * shuf2) * Math.sign(slotShuf[i] - i) : beat === 2 ? Math.sin(Math.PI * shuf3) * Math.sign(i - slotShuf[i]) : 0);
+      const dx = (i: number) => aside(i) * (narrow ? 3 : 6);
+      // Numbers fade out while the rows are in flight, so overlapping rows never show garbled digits
+      const numA = 1 - Math.sin(Math.PI * (beat === 1 ? shuf2 : beat === 2 ? shuf3 : 0));
+      const fadeFeat = beat === 2 ? 1 - ramp(t, T.flat, T.flat + 0.6) : 1; // per-point branch fades out in beat 3
+      const flatIn = beat === 2 ? ease(ramp(t, T.flat + 0.6, T.flat + 1.6)) : 0;
+
+      // Headline of the current beat, in red across the top
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+
+      // Titles and status lines (highlighted once something has changed)
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(`Points ${N} × 3`, leftCx, 46, inW + 20);
+      ctx.fillText(beat < 2 ? (narrow ? `Shared h → ${N} × ${C}` : `Shared MLP h → ${N} × ${C} features`) : (narrow ? `Flatten → MLP` : `Flatten 1 × ${3 * N} → MLP`), rightCx, 46, hW + fW + 10);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText((narrow ? LEFT_NOTE_SHORT : LEFT_NOTE)[beat], leftCx, 64, inW + 20);
+      ctx.fillText((narrow ? RIGHT_NOTE_SHORT : RIGHT_NOTE)[beat], rightCx, 64, hW + fW + 10);
+
+      // Column headers
+      ctx.font = `500 ${narrow ? 10 : 11}px "IBM Plex Mono", monospace`;
+      ctx.fillStyle = faint;
+      ['x', 'y', 'z'].forEach((c, k) => ctx.fillText(c, x0 + 10 + inCellW * (k + 0.5), top - 7));
+      ctx.globalAlpha = fadeAll * fadeFeat;
+      for (let j = 0; j < C; j++) ctx.fillText(`c${j + 1}`, fx + fCellW * (j + 0.5), top - 7);
+
+      const numFont = `500 ${narrow ? 9.5 : 12}px "IBM Plex Mono", monospace`;
+      const cell = (x: number, y: number, w: number, h: number, fill: string) => { ctx.fillStyle = fill; ctx.fillRect(x, y, w, h); };
+
+      // Input matrix: identity tick + three numbers per row
+      ctx.textBaseline = 'middle';
+      for (let i = 0; i < N; i++) {
+        const y = top + slot(i) * rowH, xi = x0 + dx(i);
+        ctx.globalAlpha = fadeAll * ease(ramp(t, 0.1 + i * 0.1, 0.5 + i * 0.1));
+        cell(xi, y + 1, 6, rowH - 2, `hsl(${hue(i)} 70% 52%)`);
+        ctx.font = numFont;
+        const rowA = ctx.globalAlpha;
+        for (let k = 0; k < 3; k++) {
+          ctx.globalAlpha = rowA;
+          cell(xi + 10 + inCellW * k, y + 1, inCellW - 2, rowH - 2, cellBg);
+          ctx.fillStyle = text;
+          ctx.globalAlpha *= numA;
+          ctx.fillText(fmt(points[i][k]), xi + 10 + inCellW * (k + 0.5) - 1, y + rowH / 2 + 0.5);
+        }
+      }
+
+      // Beats 1–2: shared h per row → feature matrix → max over rows
+      if (fadeFeat > 0) {
+        // One shared MLP h: every row fans into the same block and out again, lit up as each row goes through
+        const bw = narrow ? 30 : 54, bh = narrow ? 26 : 42;
+        const bx = hx + hW / 2 - bw / 2, by = top + (N * rowH) / 2 - bh / 2;
+        let hAct = 0;
+        for (let k = 0; k < N; k++) {
+          const y = top + k * rowH + rowH / 2;
+          const active = beat === 0 ? ramp(t, 0.8 + k * 0.45, 1.0 + k * 0.45) * (1 - ramp(t, 1.3 + k * 0.45, 1.6 + k * 0.45)) : 0;
+          hAct = Math.max(hAct, active);
+          ctx.globalAlpha = fadeAll * fadeFeat * ease(ramp(t, 0.5, 0.9));
+          ctx.strokeStyle = active > 0 ? accent : faint;
+          ctx.lineWidth = active > 0 ? 1.6 : 1;
+          const yi = by + bh * (0.2 + (0.6 * k) / (N - 1));
+          ctx.beginPath(); ctx.moveTo(hx + 2, y); ctx.lineTo(bx - 2, yi); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(bx + bw + 2, yi); ctx.lineTo(fx - 3, y); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(fx - 7, y - 3); ctx.lineTo(fx - 3, y); ctx.lineTo(fx - 7, y + 3); ctx.stroke();
+        }
+        ctx.globalAlpha = fadeAll * fadeFeat * ease(ramp(t, 0.5, 0.9));
+        drawBlock(ctx, 'mlp', bx, by, bw, bh, pal, { label: 'h', sub: narrow ? undefined : 'shared MLP', shared: true, active: hAct, compact: narrow });
+        // The max-pool block under the feature matrix: it fires in beat 1, and again after the shuffle
+        const poolAct = beat === 0 ? ramp(t, 3.7, 4.0) * (1 - ramp(t, 6.0, 6.5))
+          : beat === 1 ? ramp(t, T.shuffle + 2.2, T.shuffle + 2.5) * (1 - ramp(t, T.shuffle + 4.2, T.shuffle + 4.7)) : 0;
+        const pw = narrow ? 40 : 54, px = fx + fW / 2 - pw / 2;
+        ctx.globalAlpha = fadeAll * fadeFeat * ease(ramp(t, 3.4, 3.8));
+        drawBlock(ctx, 'maxpool', px, poolY, pw, poolH - 6, pal, { active: poolAct });
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = faint; ctx.textAlign = narrow ? 'right' : 'left';
+        ctx.fillText(narrow ? 'max per column' : 'max over the rows', narrow ? px - 8 : px + pw + 8, poolY + (poolH - 6) / 2);
+        ctx.textAlign = 'center';
+        // Feature rows appear as their point passes through h; they move with the point when shuffled
+        ctx.font = numFont;
+        for (let i = 0; i < N; i++) {
+          const y = top + slot(i) * rowH, xf = fx + dx(i);
+          const rowA = fadeAll * fadeFeat * ease(ramp(t, 1.1 + i * 0.45, 1.4 + i * 0.45));
+          for (let j = 0; j < C; j++) {
+            ctx.globalAlpha = rowA;
+            const f = feats[i][j] / fMax;
+            cell(xf + fCellW * j, y + 1, fCellW - 2, rowH - 2, dark ? `hsl(222 40% ${18 + f * 30}%)` : `hsl(222 55% ${95 - f * 30}%)`);
+            ctx.fillStyle = text;
+            ctx.globalAlpha *= numA;
+            ctx.fillText(fmt(feats[i][j]), xf + fCellW * (j + 0.5) - 1, y + rowH / 2 + 0.5);
+          }
+        }
+        // Max over each column: the winning cell is outlined in its point's colour, its value drops into the vector
+        for (let j = 0; j < C; j++) {
+          const i = winner[j];
+          const show = ramp(t, 3.9 + j * 0.35, 4.2 + j * 0.35);
+          if (show <= 0) continue;
+          ctx.globalAlpha = fadeAll * fadeFeat * show;
+          ctx.strokeStyle = `hsl(${hue(i)} 70% 52%)`;
+          ctx.lineWidth = 2;
+          ctx.strokeRect(fx + dx(i) + fCellW * j, top + slot(i) * rowH + 1, fCellW - 2, rowH - 2);
+          // row 0: computed in beat 1; row 1: recomputed after the shuffle (beat 2)
+          for (let r = 0; r < 2; r++) {
+            const a = r === 0 ? show : beat === 1 ? ramp(t, T.shuffle + 2.4 + j * 0.25, T.shuffle + 2.7 + j * 0.25) : 0;
+            if (a <= 0) continue;
+            ctx.globalAlpha = fadeAll * fadeFeat * a;
+            cell(fx + fCellW * j, vecY[r] + 1, fCellW - 2, rowH - 2, `hsla(${hue(i)} 70% 52% / ${dark ? 0.35 : 0.25})`);
+            ctx.strokeRect(fx + fCellW * j, vecY[r] + 1, fCellW - 2, rowH - 2);
+            ctx.fillStyle = heading;
+            ctx.font = `600 ${narrow ? 9.5 : 12}px "IBM Plex Mono", monospace`;
+            ctx.fillText(fmt(maxVec[j]), fx + fCellW * (j + 0.5) - 1, vecY[r] + rowH / 2 + 0.5);
+          }
+        }
+        // Row labels and the verdict
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = faint;
+        ctx.textAlign = 'right';
+        ctx.globalAlpha = fadeAll * fadeFeat * ramp(t, 3.7, 4.1);
+        ctx.fillText(beat === 0 ? 'max ↓' : 'before', fx - 6, vecY[0] + rowH / 2);
+        const after = beat === 1 ? ramp(t, T.shuffle + 2.3, T.shuffle + 2.6) : 0;
+        ctx.globalAlpha = fadeAll * fadeFeat * after;
+        ctx.fillText('after', fx - 6, vecY[1] + rowH / 2);
+        const verdict = beat === 1 ? ramp(t, T.shuffle + 4.0, T.shuffle + 4.4) : 0;
+        if (verdict > 0) drawVerdict('= same ✓', green, verdict * fadeFeat);
+      }
+
+      // Beat 3: flatten the rows into one long vector, feed one linear layer (weights tied to positions)
+      if (beat === 2 && flatIn > 0) {
+        const sx = hx + 4, sW = fEnd - sx, sCell = sW / (3 * N), sy = top + rowH * 0.3, sH = rowH * 0.9;
+        for (let i = 0; i < N; i++) {
+          const pos = slot(i); // position of this point's (x, y, z) group in the flat vector follows its row
+          const ry = top + pos * rowH + 1;
+          for (let k = 0; k < 3; k++) {
+            const tx = sx + (pos * 3 + k) * sCell, fromX = x0 + 10 + inCellW * k;
+            const x = fromX + (tx - fromX) * flatIn, y = ry + (sy - ry) * flatIn - aside(i) * sH * 0.6;
+            const w = inCellW - 2 + (sCell - 1 - (inCellW - 2)) * flatIn, h = rowH - 2 + (sH - (rowH - 2)) * flatIn;
+            ctx.globalAlpha = fadeAll * Math.min(1, flatIn * 2);
+            cell(x, y, w, h, `hsla(${hue(i)} 70% 52% / ${0.35 + 0.25 * k})`);
+          }
+        }
+        ctx.globalAlpha = fadeAll * ramp(t, T.flat + 1.6, T.flat + 2.0);
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = faint;
+        ctx.textAlign = 'left';
+        ctx.fillText('x₁ y₁ z₁ x₂ …', sx, sy + sH + 9);
+        ctx.textAlign = 'right';
+        ctx.fillText(`1 × ${3 * N}`, fEnd, sy + sH + 9);
+        // Fully connected layer: every output entry sees every position
+        const mY0 = sy + sH + 22, mY1 = vecY[0] - 8;
+        const mx0 = fx + fCellW * 0.5, mx1 = fEnd - fCellW * 0.5;
+        ctx.strokeStyle = faint;
+        ctx.lineWidth = 0.6;
+        ctx.globalAlpha = fadeAll * 0.5 * ramp(t, T.flat + 1.8, T.flat + 2.3);
+        ctx.beginPath();
+        for (let a = 0; a < 3 * N; a++) {
+          for (let j = 0; j < C; j++) {
+            ctx.moveTo(sx + (a + 0.5) * sCell, mY0 - 6);
+            ctx.lineTo(fx + fCellW * (j + 0.5) - 1, mY1);
+          }
+        }
+        ctx.stroke();
+        ctx.globalAlpha = fadeAll * ramp(t, T.flat + 1.8, T.flat + 2.3);
+        const bw = narrow ? 50 : 70, bh = narrow ? 30 : 44, by = (mY0 + mY1) / 2;
+        drawBlock(ctx, 'mlp', (mx0 + mx1) / 2 - bw / 2, by - bh / 2, bw, bh, pal, {
+          active: ramp(t, T.flat + 2.0, T.flat + 2.4) * (1 - ramp(t, T.flat + 3.0, T.flat + 3.5)) + ramp(t, T.flat + 6.1, T.flat + 6.4) * (1 - ramp(t, T.flat + 7.2, T.flat + 7.7)),
+        });
+        ctx.textAlign = 'center';
+        // Outputs: before (shuffled order) and after shuffling again; changed entries outlined in red
+        ctx.font = `600 ${narrow ? 9.5 : 12}px "IBM Plex Mono", monospace`;
+        for (let r = 0; r < 2; r++) {
+          const out = r === 0 ? outBefore : outAfter;
+          for (let j = 0; j < C; j++) {
+            const a = r === 0 ? ramp(t, T.flat + 2.2 + j * 0.1, T.flat + 2.5 + j * 0.1) : ramp(t, T.flat + 6.4 + j * 0.25, T.flat + 6.7 + j * 0.25);
+            if (a <= 0) continue;
+            ctx.globalAlpha = fadeAll * a;
+            cell(fx + fCellW * j, vecY[r] + 1, fCellW - 2, rowH - 2, cellBg);
+            if (r === 1 && out[j] !== outBefore[j]) {
+              ctx.strokeStyle = red;
+              ctx.lineWidth = 2;
+              ctx.strokeRect(fx + fCellW * j, vecY[r] + 1, fCellW - 2, rowH - 2);
+            }
+            ctx.fillStyle = heading;
+            ctx.fillText(fmt(out[j]), fx + fCellW * (j + 0.5) - 1, vecY[r] + rowH / 2 + 0.5);
+          }
+        }
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = faint;
+        ctx.textAlign = 'right';
+        ctx.globalAlpha = fadeAll * ramp(t, T.flat + 2.2, T.flat + 2.5);
+        ctx.fillText('before', fx - 6, vecY[0] + rowH / 2);
+        ctx.globalAlpha = fadeAll * ramp(t, T.flat + 6.3, T.flat + 6.6);
+        ctx.fillText('after', fx - 6, vecY[1] + rowH / 2);
+        const verdict = ramp(t, T.flat + 8.0, T.flat + 8.4);
+        if (verdict > 0) drawVerdict('≠ different ✗', red, verdict);
+      }
+      ctx.textBaseline = 'alphabetic';
+      ctx.textAlign = 'center';
+      ctx.globalAlpha = 1;
+
+      // "same ✓" / "different ✗" next to the after row (wide), or under the input matrix (narrow)
+      function drawVerdict(s: string, color: string, a: number) {
+        ctx.globalAlpha = fadeAll * a;
+        ctx.fillStyle = color;
+        ctx.font = `600 ${narrow ? 11 : 13}px Sora, sans-serif`;
+        if (narrow) {
+          ctx.textAlign = 'center';
+          ctx.fillText(s, leftCx, (vecY[0] + vecY[1] + rowH) / 2, inW);
+          return;
+        }
+        ctx.textAlign = 'left';
+        ctx.fillText(s, fEnd + 10, (vecY[0] + vecY[1] + rowH) / 2);
+      }
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.flat - 0.5); });
+    if (still) { frame(T.flat - 0.5); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

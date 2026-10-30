@@ -1,0 +1,197 @@
+---
+// Hand-crafted encodings are an information bottleneck. The real car of the scan, seen from the side and cut into
+// 0.5 m bird's-eye-view columns. Beat 1: an MV3D-style encoding keeps a few fixed numbers per column (max height,
+// density). Beat 2: a second point layout, built to have the same top point and the same count in every column,
+// gets exactly the same numbers. Beat 3: VoxelNet learns the feature from all points of the column — here a
+// height profile per column stands in for the learned feature, and the two layouts now differ.
+import { loadCar, type P } from '../../../lib/walkthroughData';
+import { rng, cm } from '../../../lib/walkthroughFiguresA';
+
+const COL = 0.5;
+const car = loadCar();
+const u0 = Math.min(...car.map((p) => p[0])), u1 = Math.max(...car.map((p) => p[0]));
+const nCol = Math.ceil((u1 - u0) / COL);
+const height = Math.max(...car.map((p) => p[2]));
+// Side view (u, z), at most ~420 points
+const step = Math.max(1, Math.round(car.length / 420));
+const a: [number, number][] = car.filter((_, i) => i % step === 0).map((p: P) => [cm(p[0] - u0), p[2]]);
+// Layout B: in every column keep the top point and the count, move every other point to a random place below it
+const rand = rng(5);
+const b: [number, number][] = [];
+for (let c = 0; c < nCol; c++) {
+  const col = a.filter(([u]) => Math.min(nCol - 1, Math.floor(u / COL)) === c);
+  if (!col.length) continue;
+  const top = col.reduce((m, p) => (p[1] > m[1] ? p : m));
+  for (const p of col) b.push(p === top ? p : [cm(c * COL + rand() * COL * 0.98), cm(rand() * top[1] * 0.98)]);
+}
+const data = { a, b, nCol, col: COL, len: cm(u1 - u0), height: cm(height) };
+---
+<canvas class="wt-canvas handcrafted-canvas" data-hc={JSON.stringify(data)}
+  role="img" aria-label="A car's side-view points cut into bird's-eye-view columns: a hand-crafted encoding keeps only the maximum height and the number of points per column, so a very different point layout gets the same numbers, while a feature learned from all points tells the two apart"></canvas>
+
+<style>
+  canvas.wt-canvas.handcrafted-canvas { height: 380px; }
+  @media (max-width: 600px) { canvas.wt-canvas.handcrafted-canvas { height: 320px; } }
+</style>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  import { drawBlock, iconPalette } from '../../../lib/figureIcons';
+  type Hc = { a: [number, number][]; b: [number, number][]; nCol: number; col: number; len: number; height: number };
+
+  const HEADLINE = [
+    'Hand-crafted encoding: a few fixed numbers per cell (max height, density)',
+    'A very different layout gets exactly the same numbers — the shape is lost',
+    'VoxelNet learns the feature from all points in the cell: now they differ',
+  ];
+  const HEADLINE_SHORT = ['Hand-crafted: max height + density per cell', 'Different layout, same numbers', 'Learned from all points: they differ'];
+  const BINS = 4; // height bins of the stand-in "learned" feature
+
+  document.querySelectorAll<HTMLCanvasElement>('.handcrafted-canvas').forEach((canvas) => {
+    const d: Hc = JSON.parse(canvas.dataset.hc!);
+    const ctx = canvas.getContext('2d')!;
+    const colOf = (u: number) => Math.min(d.nCol - 1, Math.floor(u / d.col));
+    // Per column: max height, count, height profile
+    const stats = (pts: [number, number][]) => {
+      const max = new Array(d.nCol).fill(0), n = new Array(d.nCol).fill(0);
+      const prof = Array.from({ length: d.nCol }, () => new Array(BINS).fill(0));
+      for (const [u, z] of pts) {
+        const c = colOf(u);
+        max[c] = Math.max(max[c], z); n[c]++;
+        prof[c][Math.min(BINS - 1, Math.floor((z / d.height) * BINS))]++;
+      }
+      prof.forEach((p, c) => p.forEach((v, k) => (p[k] = n[c] ? v / n[c] : 0)));
+      return { max, n, prof };
+    };
+    const SA = stats(d.a), SB = stats(d.b);
+
+    const T = { enc: 0, same: 6, learn: 12.5, end: 20 };
+    const BEATS = [T.enc, T.same, T.learn];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const pal = iconPalette();
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.same ? 0 : t < T.learn ? 1 : 2;
+      const narrow = W < 520;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const enc = ease(ramp(t, 0.8, 2.6));                 // encoding lines appear
+      const showB = ease(ramp(t, T.same + 0.3, T.same + 1.6));
+      const learn = ease(ramp(t, T.learn + 0.3, T.learn + 1.8));
+
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+
+      // Two panels; rows: points (side view) · density numbers · learned feature strip
+      const gap = narrow ? 26 : 60, side = narrow ? 6 : 16, gutter = narrow ? 6 : 62; // gutter: row labels
+      const pw = (W - gutter - side - gap) / 2;
+      const x0 = (k: number) => gutter + k * (pw + gap);
+      const top = 84, featH = narrow ? 34 : 44;
+      const featY = H - featH - 8, nY = featY - (narrow ? 12 : 16);
+      const plotH = nY - (narrow ? 16 : 20) - top;
+      const S = Math.min((pw - 8) / d.len, plotH / d.height);
+      const cw = d.col * S;
+
+      const panel = (k: number) => {
+        const pts = k === 0 ? d.a : d.b, st = k === 0 ? SA : SB;
+        const px = x0(k) + (pw - d.len * S) / 2, base = top + plotH;
+        const al = fadeAll * (k === 0 ? 1 : showB);
+        if (al < 0.01) return;
+        ctx.globalAlpha = al;
+        ctx.textAlign = 'center';
+        ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+        ctx.fillStyle = heading;
+        ctx.fillText(k === 0 ? (narrow ? 'Car (side view)' : 'Real car points (side view)') : (narrow ? 'Another layout' : 'Another point layout'), x0(k) + pw / 2, 46);
+        ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = beat === 0 ? text : accent;
+        const note = beat === 0 ? `${pts.length} points, ${d.nCol} columns of ${d.col} m` : beat === 1 ? (k === 0 ? 'encoded: max height + density' : 'same top point, same count per column') : 'feature from all points';
+        ctx.fillText(note, x0(k) + pw / 2, 64, pw);
+
+        // Column grid
+        ctx.strokeStyle = faint; ctx.lineWidth = 0.6; ctx.globalAlpha = al * 0.6;
+        ctx.beginPath();
+        for (let c = 0; c <= d.nCol; c++) { ctx.moveTo(px + c * cw, top); ctx.lineTo(px + c * cw, base); }
+        ctx.moveTo(px, base); ctx.lineTo(px + d.nCol * cw, base);
+        ctx.stroke();
+        // Points: dimmed while only the encoding counts, back in full when learning
+        const ptA = al * (1 - 0.65 * enc * (1 - learn));
+        ctx.globalAlpha = ptA;
+        ctx.fillStyle = dark ? '#8fb3ff' : '#1e3a8a';
+        for (const [u, z] of pts) { ctx.beginPath(); ctx.arc(px + u * S, base - z * S, narrow ? 1.3 : 1.8, 0, Math.PI * 2); ctx.fill(); }
+        // Encoding: a bar at the max height of every column, and the count below
+        ctx.globalAlpha = al * enc * (1 - 0.6 * learn);
+        ctx.strokeStyle = red; ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        st.max.forEach((m, c) => { if (st.n[c]) { const y = base - m * S; ctx.moveTo(px + c * cw + 1.5, y); ctx.lineTo(px + (c + 1) * cw - 1.5, y); } });
+        ctx.stroke();
+        ctx.fillStyle = red; ctx.textAlign = 'center';
+        ctx.font = `500 ${narrow ? 8 : 10}px "IBM Plex Mono", monospace`;
+        st.n.forEach((n, c) => ctx.fillText(String(n), px + (c + 0.5) * cw, nY));
+        if (!narrow && k === 0) { ctx.textAlign = 'right'; ctx.fillStyle = text; ctx.fillText('density', px - 8, nY); }
+        // Learned feature strip: one column of BINS cells per BEV column (height profile, bottom bin at the bottom)
+        if (learn > 0.01) {
+          ctx.globalAlpha = al * learn;
+          const ch = featH / BINS;
+          st.prof.forEach((p, c) => p.forEach((v, kk) => {
+            ctx.fillStyle = dark ? `hsl(265 55% ${18 + v * 55}%)` : `hsl(265 70% ${95 - v * 55}%)`;
+            ctx.fillRect(px + c * cw + 1, featY + (BINS - 1 - kk) * ch, cw - 2, ch - 1);
+          }));
+          if (!narrow && k === 0) { ctx.textAlign = 'right'; ctx.fillStyle = text; ctx.font = `500 10px "IBM Plex Mono", monospace`; ctx.fillText('feature', px - 8, featY + featH / 2 + 3); }
+        }
+      };
+      panel(0); panel(1);
+
+      // Between the panels: "=" for the encoding, "≠" once learned
+      const mx = x0(0) + pw + gap / 2;
+      if (showB > 0.01) {
+        ctx.globalAlpha = fadeAll * showB;
+        ctx.fillStyle = red; ctx.textAlign = 'center';
+        ctx.font = `700 ${narrow ? 20 : 28}px Sora, sans-serif`;
+        ctx.fillText(learn > 0.5 ? '≠' : '=', mx, learn > 0.5 ? featY + featH / 2 + 9 : nY + 2);
+      }
+      // The shared block that computes the feature, between the two strips
+      if (learn > 0.01 && !narrow) {
+        const bw = 46, bh = 30;
+        ctx.globalAlpha = fadeAll;
+        drawBlock(ctx, 'mlp', mx - bw / 2, top + plotH / 2 - bh / 2, bw, bh, pal, { shared: true, active: learn, alpha: learn, label: 'VFE', compact: true });
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.learn - 0.5); });
+    if (still) { frame(T.learn - 0.5); return; }
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

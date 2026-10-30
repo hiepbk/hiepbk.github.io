@@ -1,0 +1,40 @@
+---
+// Main architecture of PV-RCNN, laid out like the paper's Figure 2: the voxel branch on top (voxels → 3D sparse CNN
+// → RPN proposals), the keypoint branch below (FPS → Voxel Set Abstraction → keypoint weighting), then RoI-grid
+// pooling and the refinement heads. One node per row of the walkthrough's tensor-shape table (KITTI), same names
+// and shapes; data flows from the raw points to the refined boxes, one table row at a time.
+const spec = {
+  cols: 6, rows: 2, colsN: 4, rowsN: 3,
+  nodes: [
+    { stage: 'Input range', glyph: 'points', shape: 'raw points', opText: 'X [0, 70.4] m, Y [−40, 40] m, Z [−3, 1] m',
+      head: 'Input: the raw LiDAR scan', pos: [0, 0], posN: [0, 0] },
+    { stage: 'Voxel grid', op: 'voxelize', shape: '1408 × 1600 × 40', shapeN: '1408×1600×40', opText: 'voxel size (0.05, 0.05, 0.1) m',
+      head: 'Voxelize the scan', pos: [1, 0], posN: [1, 0] },
+    { stage: 'Sparse CNN levels 1–4', block: 'backbone', shape: '16, 32, 64, 64 ch', opText: '1×, 2×, 4×, 8× downsampled',
+      head: '3D sparse convolutions: four levels of voxel features', headN: '3D sparse CNN, four levels', pos: [2, 0], posN: [2, 0] },
+    { stage: 'Proposals', block: 'rpn', shape: 'top 100 at test', shapeN: 'top 100', opText: 'BEV anchor RPN, NMS IoU 0.7',
+      head: 'BEV map → anchor RPN: 3D proposals', headN: 'Anchor RPN → proposals', pos: [3, 0], posN: [3, 0] },
+    { stage: 'Keypoints', op: 'FPS', shape: 'n = 2048', opText: 'FPS on raw points',
+      head: 'Farthest point sampling picks the keypoints', headN: 'FPS → keypoints', pos: [0, 1], posN: [0, 1], from: [0] },
+    { stage: 'VSA', block: 'mlp', shared: true, shape: '4 levels × 2 radii', shapeN: '2 radii / level', opText: 'two radii per level: (0.4, 0.8) … (2.4, 4.8) m',
+      head: 'Voxel Set Abstraction: keypoints gather voxel features', headN: 'Voxel Set Abstraction', pos: [2, 1], posN: [1, 1], from: [4, 2] },
+    { stage: 'Keypoint weighting', block: 'mlp', shared: true, shape: 'n × C', opText: '3-layer MLP + sigmoid, feature × score',
+      head: 'Predicted keypoint weighting: foreground counts more', headN: 'Keypoint weighting', pos: [3, 1], posN: [2, 1] },
+    { stage: 'RoI-grid pooling', block: 'roi', shape: '216 grid points', opText: '6 × 6 × 6 grid points, radii (0.8, 1.6) m',
+      head: 'RoI-grid pooling: grid points gather keypoint features', headN: 'RoI-grid pooling', pos: [4, 1], posN: [3, 1], from: [6, 3] },
+    { stage: 'RoI feature', block: 'mlp', shape: '256-d per proposal', shapeN: '256-d', opText: 'flatten grid features, 2-layer MLP',
+      head: 'Flatten the grid into one 256-d feature per proposal', headN: 'RoI feature, 256-d', pos: [5, 1], posN: [3, 2] },
+    { stage: 'Heads', block: 'mlp', shape: 'score + box per proposal', shapeN: 'score + box', opText: 'IoU-guided confidence + box residual',
+      head: 'IoU-guided confidence and box residual: the final boxes', headN: 'Confidence + residual', pos: [5, 0], posN: [2, 2] },
+  ],
+};
+---
+<canvas class="wt-canvas arch-pvrcnn-canvas" data-arch={JSON.stringify(spec)}
+  role="img" aria-label="PV-RCNN architecture, one block per row of the tensor-shape table: voxel grid, 3D sparse CNN with four levels, anchor RPN proposals, farthest point sampling of keypoints, voxel set abstraction, keypoint weighting, RoI-grid pooling, a 256-d RoI feature and the confidence and box heads"></canvas>
+
+<script>
+  import { runArchFigure, type ArchSpec } from '../../../lib/archFigureB';
+  document.querySelectorAll<HTMLCanvasElement>('.arch-pvrcnn-canvas').forEach((canvas) => {
+    runArchFigure(canvas, JSON.parse(canvas.dataset.arch!) as ArchSpec);
+  });
+</script>

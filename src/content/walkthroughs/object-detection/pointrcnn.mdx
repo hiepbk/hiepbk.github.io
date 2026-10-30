@@ -1,0 +1,250 @@
+---
+title: "PointRCNN: proposals grown from segmented points"
+category: object-detection
+order: 6
+summary: "What if a detector never builds a grid at all? PointRCNN segments the foreground points of a raw LiDAR scan, grows a 3D proposal from each of them, and refines every proposal in its own canonical frame — a two-stage detector on a PointNet++ backbone."
+date: 2026-10-30
+draft: true
+paper:
+  title: "PointRCNN: 3D Object Proposal Generation and Detection from Point Cloud"
+  authors: "Shaoshuai Shi, Xiaogang Wang, Hongsheng Li"
+  venue: CVPR 2019
+  links:
+    - name: arXiv
+      url: https://arxiv.org/abs/1812.04244
+    - name: Code
+      url: https://github.com/sshaoshuai/PointRCNN
+---
+
+import Figure from '../../../components/walkthroughs/Figure.astro';
+import PointRcnnArchFigure from '../../../components/walkthroughs/pointrcnn/PointRcnnArchFigure.astro';
+import SegmentProposeFigure from '../../../components/walkthroughs/pointrcnn/SegmentProposeFigure.astro';
+import BinLocalizationFigure from '../../../components/walkthroughs/pointrcnn/BinLocalizationFigure.astro';
+import CanonicalTransformFigure from '../../../components/walkthroughs/pointrcnn/CanonicalTransformFigure.astro';
+
+## Motivation & Main Contribution
+
+- So far the series has pushed points into grids: BEV images (**MV3D**), voxels (**VoxelNet**, **SECOND**),
+  pillars (**PointPillars**). Every grid quantises the scan and loses some detail.
+- PointRCNN goes back to the **PointNet** road: no voxels, no BEV image, no camera — raw points end to end.
+- It is a **two-stage, point-only** detector in the spirit of Faster R-CNN:
+  1. **Stage 1 — bottom-up proposals.** Segment foreground points and predict a 3D box from each one.
+  2. **Stage 2 — canonical refinement.** Pool the points inside each proposal, rotate and shift them into
+     the proposal's own frame, and refine the box and its confidence.
+- **Main contributions:** proposals from segmented points instead of anchors; refinement in canonical
+  coordinates; a **bin-based** box loss (classify a bin, then regress inside it).
+- At submission it ranked first among published methods on the KITTI 3D car test board, using LiDAR only.
+
+## Challenges at the Time
+
+- **Anchors in 3D are expensive.** AVOD places 80–100k anchor boxes in 3D space and pools multi-view
+  features for each one.
+- **Image-first pipelines miss objects.** F-PointNet crops a frustum from a 2D detection; an object the
+  camera misses (occlusion, darkness) can never be recovered in 3D.
+- **Quantisation.** BEV projection and voxelization lose information, and dense 3D CNNs are slow.
+- **Large search space.** A 3D box has 7 parameters, including a heading angle; direct regression of
+  all of them from scratch is hard to train.
+
+## Naive Questions
+
+- **Where do the segmentation labels come from?**
+  For free: in driving scenes objects do not overlap, so every point inside a ground-truth box is foreground.
+- **Why predict a box from *every* foreground point?**
+  Each point sees its object through the backbone's receptive field; NMS then keeps a few good proposals.
+- **Why not regress the centre offset directly?**
+  The paper finds that classifying a bin and regressing a small residual is more accurate and converges faster.
+- **Why rotate the pooled points into the proposal's frame?**
+  Then every car looks "the same way round", and stage 2 only has to learn small corrections.
+- **Doesn't the canonical frame throw away distance?**
+  Yes — so the distance to the sensor is added back as an extra feature.
+- **Is PointNet++ fast enough for a full scan?**
+  It runs on 16,384 sampled points; sampling and grouping cost is the price of staying point-based.
+
+## Key Idea
+
+> **Key idea.** In 3D the boxes already give a segmentation mask for free — so segment the foreground
+> points first, grow a proposal from each of them, and refine each proposal in its own coordinate frame.
+
+Bin-based localisation for a foreground point $p$ at $(x^{(p)}, z^{(p)})$ whose object centre is $(x^p, z^p)$:
+
+$$
+\mathrm{bin}_u^{(p)} = \left\lfloor \frac{u^p - u^{(p)} + S}{\delta} \right\rfloor, \qquad
+\mathrm{res}_u^{(p)} = \frac{1}{C}\left(u^p - u^{(p)} + S - \left(\mathrm{bin}_u^{(p)} \cdot \delta + \frac{\delta}{2}\right)\right), \quad u \in \{x, z\}
+$$
+
+- $S$: search range around the point along each ground-plane axis; $\delta$: bin length; $C$: bin length for normalisation.
+- The bin is trained with cross-entropy, the residual with smooth L1. The heading $\theta$ is handled the same
+  way with $n$ angle bins; the height $y$ and size $(h, w, l)$ are plain residual regression (size relative to
+  the class-average size).
+
+<Figure>
+  <BinLocalizationFigure />
+  <span slot="caption">Bin-based localisation for one foreground point of a real car (car hyper-parameters:
+  $S = 3$ m, $\delta = 0.5$ m, so 12 bins per axis). The point sits on the car's surface, metres away from the
+  centre; the head first picks the bin along $x$ and along $z$, then only regresses a residual smaller than half a bin.</span>
+</Figure>
+
+## Dive into Model Architecture & Key Components
+
+<Figure>
+  <PointRcnnArchFigure />
+  <span slot="caption">PointRCNN from raw points to boxes, laid out like the paper's Figure 2: stage 1 (top) segments the
+  scan and grows one proposal per foreground point; stage 2 (bottom) pools the points of each proposal, moves them into
+  its canonical frame and refines the box. One block per row of the table below; solid blocks are learned layers,
+  dashed ones fixed operations.</span>
+</Figure>
+
+### The pipeline, step by step
+
+1. **Input.** Sample 16,384 points per scene (repeat points if a scene has fewer).
+2. **Backbone.** PointNet++ with multi-scale grouping: four set-abstraction levels, then four
+   feature-propagation levels back to every point (the encoder–decoder from the PointNet walkthrough).
+
+> **Builds on.** PointNet++ with multi-scale grouping as the backbone
+> ([walkthrough 01](/walkthroughs/object-detection/pointnet/)), and the two-stage recipe of R-CNN / Faster R-CNN from 2D detection.
+3. **Stage-1 heads.** Per point: a foreground score (focal loss) and a bin-based box (only foreground points
+   are supervised).
+4. **Proposal NMS.** Oriented BEV IoU NMS. Training: threshold 0.85, keep top 300. Inference: threshold 0.8,
+   keep top 100.
+5. **Point cloud region pooling.** Enlarge each proposal by $\eta$ and keep the points inside, with their
+   stage-1 features.
+6. **Canonical transformation** of the pooled points, then a small PointNet++ encoder.
+7. **Stage-2 heads.** Confidence (cross-entropy) and bin-based box refinement; final oriented NMS with
+   BEV IoU 0.01.
+
+### Tensor shapes
+
+| Stage | Operation | Shape |
+|---|---|---|
+| Input | raw scene points, randomly sampled | $16384$ points |
+| SA 1–4 (MSG) | sample and group | $4096 \to 1024 \to 256 \to 64$ points |
+| FP 1–4 | interpolate back up | $16384 \times C$ (per-point features) |
+| Stage-1 heads | foreground mask + bin-based box | one score and one box per point |
+| NMS | oriented BEV NMS | 300 (train) / 100 (test) proposals |
+| Region pooling | points in the enlarged box, random sample | $512$ points per proposal |
+| Canonical transform | rotate + translate into the box frame, add depth | $512$ points per proposal |
+| Stage-2 SA (SSG) | sample and group | $128 \to 32 \to 1$ |
+| Stage-2 heads | confidence + box refinement | one score and one box per proposal |
+
+- The paper does not state the backbone channel width $C$, so it stays a symbol here.
+
+### Stage 1: segmentation as the proposal generator
+
+- Foreground points are a small minority in an outdoor scan → **focal loss**
+  $L_{focal}(p_t) = -\alpha_t (1 - p_t)^\gamma \log(p_t)$ with $\alpha_t = 0.25$, $\gamma = 2$.
+- Ground-truth boxes are enlarged by 0.2 m on each side, and background points in that margin are ignored,
+  because box annotations are not pixel-perfect.
+- Hyper-parameters (car): $S = 3$ m, $\delta = 0.5$ m, $n = 12$ heading bins.
+- Why it is cheap: no anchors at all — the number of candidates is the number of foreground points.
+
+> **Builds on.** Focal loss (RetinaNet) for the foreground mask, and F-PointNet's bin-based heading,
+> extended here to the centre location.
+
+<Figure>
+  <SegmentProposeFigure />
+  <span slot="caption">Stage 1 on a real LiDAR scan (PandaSet), seen from above: the per-point mask picks out the
+  points on cars, each of them proposes one box around itself, and oriented NMS (BEV IoU 0.8) keeps a few.
+  The proposed boxes are illustrative — ground truth plus an error that grows with the point's distance to the centre.</span>
+</Figure>
+
+### Point cloud region pooling: keep a bit of context
+
+- Each proposal $b_i = (x_i, y_i, z_i, h_i, w_i, l_i, \theta_i)$ is enlarged to
+  $(x_i, y_i, z_i, h_i + \eta, w_i + \eta, l_i + \eta, \theta_i)$.
+- Every point inside keeps: coordinates, intensity $r^{(p)}$, predicted mask $m^{(p)} \in \{0, 1\}$, and the
+  stage-1 feature $f^{(p)} \in \mathbb{R}^C$. Proposals with no points are dropped.
+- $\eta = 1.0$ m works best (Table 5): no context gives 75.68 moderate AP, $\eta = 1.0$ m gives 77.67;
+  larger margins start to swallow points of neighbouring objects.
+
+### Canonical transformation: refine in the box's own frame
+
+- Each proposal gets its own coordinate system: origin at the box centre, $X'$ along the heading,
+  $Z'$ perpendicular to it on the ground plane, $Y'$ unchanged.
+- Pooled points are rotated and translated into this frame; the proposal becomes $(0, 0, 0, h, w, l, 0)$ and
+  stage 2 learns only the residual to the ground truth.
+- The frame removes distance information, so the depth $d^{(p)} = \sqrt{(x^{(p)})^2 + (y^{(p)})^2 + (z^{(p)})^2}$ is
+  added back. The local inputs $[\tilde p, r^{(p)}, m^{(p)}, d^{(p)}]$ go through FC layers, are concatenated with
+  $f^{(p)}$, and feed the stage-2 PointNet++ encoder.
+- This is the single most important step: without it, moderate AP drops from 77.67 to **13.68** (Table 4).
+  Removing the stage-1 features $f^{(p)}$ costs 2.71 moderate AP.
+
+<Figure>
+  <CanonicalTransformFigure />
+  <span slot="caption">Three real cars of the scan as proposals, each enlarged by $\eta = 1$ m. Moving the origin
+  to the box centre and rotating by $-\theta$ maps every proposal onto the same frame, where the car points along
+  $X'$ — so stage 2 only has to learn small corrections. The distance to the sensor is gone, hence the extra
+  per-point depth $d^{(p)}$.</span>
+</Figure>
+
+### Stage 2: bins again, but smaller
+
+- Targets: positive for classification if max 3D IoU > 0.6, negative if < 0.45; box regression on proposals
+  with 3D IoU ≥ 0.55.
+- Smaller search range $S = 1.5$ m, $\delta = 0.5$ m. Since IoU ≥ 0.55, the heading error is assumed to lie in
+  $[-\pi/4, \pi/4]$ and is split into bins of $\omega = 10°$.
+- Loss: cross-entropy on confidence over all sampled proposals + bin and residual losses over the positive ones.
+- The two stages are trained **separately**: stage 1 for 200 epochs (batch 16), stage 2 for 50 epochs (batch 256), both at lr 0.002.
+- Augmentation includes **GT-AUG** — pasting ground-truth boxes and their points from other scenes, the
+  sampling trick from SECOND.
+
+> **Builds on.** SECOND's ground-truth sampling augmentation
+> ([walkthrough 04](/walkthroughs/object-detection/second/)).
+
+## Conclusion
+
+### Results
+
+KITTI **test** set, 3D AP (PointRCNN, Table 1):
+
+| Method | Modality | Car easy <span class="better-up">↑</span> | Car mod. <span class="better-up">↑</span> | Car hard <span class="better-up">↑</span> | Ped. mod. <span class="better-up">↑</span> | Cyc. mod. <span class="better-up">↑</span> |
+|---|---|---|---|---|---|---|
+| MV3D | RGB + LiDAR | 71.09 | 62.35 | 55.12 | – | – |
+| UberATG-ContFuse | RGB + LiDAR | 82.54 | 66.22 | 64.04 | – | – |
+| AVOD-FPN | RGB + LiDAR | 81.94 | 71.88 | 66.38 | 42.81 | 52.18 |
+| F-PointNet | RGB + LiDAR | 81.20 | 70.39 | 62.19 | **44.89** | 56.77 |
+| VoxelNet | LiDAR | 77.47 | 65.11 | 57.73 | 33.69 | 48.36 |
+| SECOND | LiDAR | 83.13 | 73.66 | 66.20 | 42.56 | 53.85 |
+| **PointRCNN** | LiDAR | **85.94** | **75.76** | **68.32** | 41.78 | **59.60** |
+
+Car (IoU 0.7) uses AP at IoU 0.7; pedestrian and cyclist at IoU 0.5.
+
+KITTI **val** set, car 3D AP (Table 2) and proposal recall (Table 3, car, moderate):
+
+| Method | Easy <span class="better-up">↑</span> | Moderate <span class="better-up">↑</span> | Hard <span class="better-up">↑</span> |
+|---|---|---|---|
+| MV3D | 71.29 | 62.68 | 56.56 |
+| VoxelNet | 81.98 | 65.46 | 62.85 |
+| SECOND | 87.43 | 76.48 | 69.10 |
+| AVOD-FPN | 84.41 | 74.44 | 68.65 |
+| F-PointNet | 83.76 | 70.92 | 63.65 |
+| PointRCNN (no GT-AUG) | 88.45 | 77.67 | 76.30 |
+| **PointRCNN** | **88.88** | **78.63** | **77.38** |
+
+| Proposals | Method | Recall at IoU 0.5 <span class="better-up">↑</span> |
+|---|---|---|
+| 50 | AVOD | 91.00 |
+| 50 | **PointRCNN** | **96.01** |
+| 300 | MV3D | 91.00 |
+| 300 | **PointRCNN** | **98.21** |
+
+### Pros and Cons
+
+- **Pros**
+  - No anchors and no grid: proposals grow from segmented points, with high recall from few proposals.
+  - Segmentation labels come for free from the boxes.
+  - Canonical refinement makes stage 2 learn small residuals — removing it costs most of the accuracy (Table 4).
+  - LiDAR only, yet ahead of the camera + LiDAR methods on cars at the time.
+- **Cons**
+  - A PointNet++ backbone over the whole scan is costly (sampling and grouping 16,384 points).
+  - The two stages are trained separately.
+  - Pedestrians lag behind camera + LiDAR methods — few points on small objects.
+
+### Future Work
+
+- Keep point-level refinement, but get proposals and scene features from a faster backbone.
+- Train both stages end to end.
+
+### Next
+
+- [**PV-RCNN**](/walkthroughs/object-detection/pv-rcnn/) — the same authors keep PointNet++-style set abstraction for
+  refinement but hand proposals and scene encoding to a sparse voxel CNN, trained end to end.

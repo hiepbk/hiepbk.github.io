@@ -1,0 +1,66 @@
+---
+import { getCollection } from 'astro:content';
+import Base from '../../layouts/Base.astro';
+import WalkthroughCard from '../../components/WalkthroughCard.astro';
+import { walkthroughCategories } from '../../config';
+
+const notes = (await getCollection('walkthroughs', (n) => import.meta.env.DEV || !n.data.draft))
+  .sort((a, b) => (a.data.order ?? 999) - (b.data.order ?? 999) || b.data.date.valueOf() - a.data.date.valueOf());
+const roadmap = (await getCollection('roadmap')).sort((a, b) => a.data.order - b.data.order);
+const counts = Object.fromEntries(walkthroughCategories.map((c) => [c.id, notes.filter((n) => n.data.category === c.id).length]));
+const written = (category: string, order: number) =>
+  notes.find((n) => n.data.category === category && n.data.order === order);
+---
+<Base title="Paper Walkthroughs" description="Walkthroughs of the signature papers in 3D perception — why each was needed, what it borrowed, and what made it special.">
+  <header class="page-header">
+    <h1>Paper Walkthroughs</h1>
+  </header>
+
+  <div class="filters">
+    <button class="filter active" data-filter="all">All</button>
+    {walkthroughCategories.map((c) => (
+      <button class="filter" data-filter={c.id} disabled={counts[c.id] === 0} title={counts[c.id] === 0 ? 'Coming later' : undefined}>
+        {c.name}{counts[c.id] > 0 && <span class="count">{counts[c.id]}</span>}
+      </button>
+    ))}
+  </div>
+
+  {notes.length > 0 ? (
+    <div class="pub-list" id="note-list">
+      {notes.map((n) => <WalkthroughCard note={n} />)}
+    </div>
+  ) : (
+    <p class="empty-note">The first walkthroughs are on the way — see the reading roadmap below.</p>
+  )}
+
+  {walkthroughCategories.filter((c) => roadmap.some((r) => r.data.category === c.id)).map((c) => (
+    <section class="section roadmap">
+      <h2 class="section-title"><i class="fa-solid fa-route"></i>Reading roadmap · {c.name}</h2>
+      <ol class="roadmap-list">
+        {roadmap.filter((r) => r.data.category === c.id).map(({ data: r }) => {
+          const note = written(r.category, r.order);
+          return (
+            <li class:list={{ done: note }}>
+              <span class="roadmap-num">{String(r.order).padStart(2, '0')}</span>
+              <div>
+                <h3>{note ? <a href={`/walkthroughs/${note.id}/`}>{r.paper}</a> : r.paper} <span class="roadmap-venue">{r.venue}</span></h3>
+                <p>{r.hook}</p>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  ))}
+</Base>
+
+<script>
+  const buttons = document.querySelectorAll<HTMLButtonElement>('.filter');
+  buttons.forEach((b) => b.addEventListener('click', () => {
+    buttons.forEach((x) => x.classList.toggle('active', x === b));
+    const f = b.dataset.filter;
+    document.querySelectorAll<HTMLElement>('#note-list .note-card').forEach((c) => {
+      c.classList.toggle('hidden', f !== 'all' && c.dataset.category !== f);
+    });
+  }));
+</script>

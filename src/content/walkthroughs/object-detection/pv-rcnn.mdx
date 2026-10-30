@@ -1,0 +1,238 @@
+---
+title: "PV-RCNN: sparse voxels for proposals, point sets for refinement"
+category: object-detection
+order: 7
+summary: "Voxels or points? PV-RCNN stops choosing: a SECOND-style sparse voxel CNN finds the proposals, a small set of keypoints summarises its features with PointNet++ set abstraction, and a grid of points inside each box pulls them back for refinement."
+date: 2026-10-30
+draft: true
+paper:
+  title: "PV-RCNN: Point-Voxel Feature Set Abstraction for 3D Object Detection"
+  authors: "Shaoshuai Shi, Chaoxu Guo, Li Jiang, Zhe Wang, Jianping Shi, Xiaogang Wang, Hongsheng Li"
+  venue: CVPR 2020
+  links:
+    - name: arXiv
+      url: https://arxiv.org/abs/1912.13192
+    - name: Code (OpenPCDet)
+      url: https://github.com/open-mmlab/OpenPCDet
+---
+
+import Figure from '../../../components/walkthroughs/Figure.astro';
+import PvRcnnArchFigure from '../../../components/walkthroughs/pv-rcnn/PvRcnnArchFigure.astro';
+import VoxelSetAbstractionFigure from '../../../components/walkthroughs/pv-rcnn/VoxelSetAbstractionFigure.astro';
+import RoiGridPoolingFigure from '../../../components/walkthroughs/pv-rcnn/RoiGridPoolingFigure.astro';
+
+## Motivation & Main Contribution
+
+- Two families now compete:
+  - **Grid-based** (VoxelNet, SECOND, PointPillars): efficient, high-quality proposals, but the receptive
+    field is tied to the kernel size and the features are quantised.
+  - **Point-based** (PointRCNN): PointNet++ set abstraction keeps exact locations and a flexible receptive
+    field (any radius), but is costly on a whole scene.
+- PV-RCNN — from the PointRCNN authors — takes the best part of each:
+  - a **3D sparse-convolution voxel CNN** (SECOND-style) as backbone and proposal network;
+  - **PointNet++ set abstraction** to gather voxel features for second-stage refinement.
+- **Main contributions:**
+  1. **Voxel-to-keypoint scene encoding** (Voxel Set Abstraction, VSA): summarise the whole scene in a few
+     thousand keypoints.
+  2. **Keypoint-to-grid RoI feature abstraction** (RoI-grid pooling): pool keypoint features to a grid of
+     points inside each proposal, with multiple radii.
+- Ranked 1st on the KITTI car 3D leaderboard (as of Nov. 15, 2019) and set a new mark on Waymo.
+
+## Challenges at the Time
+
+- **Pooling from voxel CNN features is poor.** The last feature volume is downsampled up to $8\times$ —
+  too coarse for precise boxes. Upsampled volumes are still **sparse**, so trilinear / bilinear RoI pooling
+  (8 / 4 neighbours) mostly reads zeros.
+- **Set abstraction directly on voxels is too expensive.** A KITTI scene can have ~18,000 voxels in the
+  $4\times$-downsampled volume. With 100 proposals × $3 \times 3 \times 3$ grid points, that is
+  $2{,}700 \times 18{,}000$ pairwise distances — even a small grid does not fit.
+- **Point-based backbones** (PointRCNN) recall fewer good proposals than a voxel CNN with anchors (Table 4).
+
+## Naive Questions
+
+- **Why not just add a second stage to SECOND?**
+  RoI pooling on sparse, downsampled feature maps gathers mostly empty cells (see above).
+- **Why keypoints, and not all voxels?**
+  2,048 keypoints (KITTI) are a small, fixed-size bridge; grid points then search only among them.
+- **How are keypoints chosen?**
+  Farthest point sampling on the raw points — the same FPS as in PointNet++.
+- **Many keypoints land on the road. Does that hurt?**
+  A small head predicts a foreground weight per keypoint and down-weights the background ones.
+- **Why grid points instead of the points inside the box?**
+  A fixed $6 \times 6 \times 6$ grid gives a fixed-size RoI feature, and the radii reach beyond the box for context.
+- **Why predict IoU instead of a class score?**
+  An IoU-shaped target ranks boxes by localisation quality; it beats a plain classification target (Table 9).
+
+## Key Idea
+
+> **Key idea.** Encode the scene with a sparse voxel CNN, compress it into a small set of keypoints with
+> set abstraction, then let a grid of points inside each proposal gather features from those keypoints.
+
+Voxel Set Abstraction at backbone level $k$, for keypoint $p_i$:
+
+$$
+S_i^{(l_k)} = \Big\{ \big[ f_j^{(l_k)} ;\, v_j^{(l_k)} - p_i \big] \;:\; \lVert v_j^{(l_k)} - p_i \rVert < r_k \Big\},
+\qquad
+f_i^{(pv_k)} = \max\Big\{ G\big(\mathcal{M}(S_i^{(l_k)})\big) \Big\}
+$$
+
+- $f_j^{(l_k)}$, $v_j^{(l_k)}$: feature and 3D centre of non-empty voxel $j$ at level $k$; $r_k$: search radius.
+- $\mathcal{M}$: randomly keep at most $T_k$ voxels; $G$: a shared MLP; $\max$: channel-wise max pool — the PointNet
+  recipe, now applied to **voxels** instead of raw points.
+- Final keypoint feature: $f_i^{(p)} = [f_i^{(pv_1)}, \dots, f_i^{(pv_4)}, f_i^{(raw)}, f_i^{(bev)}]$.
+
+## Dive into Model Architecture & Key Components
+
+<Figure>
+  <PvRcnnArchFigure />
+  <span slot="caption">PV-RCNN from raw points to boxes, laid out like the paper's Figure 2 (KITTI settings): the voxel
+  branch (top) produces proposals; the keypoint branch (bottom) summarises the voxel features of the scene in 2,048
+  keypoints, which RoI-grid pooling then reads for each proposal. One block per row of the table below; solid blocks
+  are learned layers, dashed ones fixed operations.</span>
+</Figure>
+
+### The pipeline, step by step
+
+1. **Voxelize** the scan; a non-empty voxel's feature is the mean of its points (coordinates + reflectance).
+2. **3D sparse CNN**: $3 \times 3 \times 3$ sparse convolutions, four levels at $1\times, 2\times, 4\times, 8\times$ downsampling.
+3. **RPN**: stack the $8\times$ volume along Z into a BEV map; anchor-based proposals (two anchors per BEV
+   cell per class, at 0° and 90°, class-average size), as in SECOND.
+4. **Keypoints**: FPS picks $n$ keypoints from the raw points.
+5. **VSA**: each keypoint aggregates voxel features from all four levels, raw points, and the BEV map.
+6. **Predicted Keypoint Weighting (PKW)**: re-weight each keypoint feature by its predicted foreground score.
+7. **RoI-grid pooling**: $6 \times 6 \times 6$ grid points per proposal gather keypoint features.
+8. **Refinement head**: 2-layer MLP, then a confidence branch (IoU target) and a box-residual branch.
+
+> **Builds on.** The 3D sparse voxel CNN and anchor-based RPN of SECOND
+> ([walkthrough 04](/walkthroughs/object-detection/second/)).
+
+### Tensor shapes (KITTI)
+
+| Stage | Operation | Shape |
+|---|---|---|
+| Input range | X $[0, 70.4]$ m, Y $[-40, 40]$ m, Z $[-3, 1]$ m | raw points |
+| Voxel grid | voxel size $(0.05, 0.05, 0.1)$ m | $1408 \times 1600 \times 40$ (range ÷ voxel size) |
+| Sparse CNN levels 1–4 | $1\times, 2\times, 4\times, 8\times$ downsampled | 16, 32, 64, 64 channels |
+| Proposals | BEV anchor RPN, NMS IoU 0.7 | top 100 at test |
+| Keypoints | FPS on raw points | $n = 2048$ (Waymo: 4096) |
+| VSA radii per level | two radii each | (0.4, 0.8), (0.8, 1.2), (1.2, 2.4), (2.4, 4.8) m; raw points (0.4, 0.8) m |
+| Keypoint weighting | 3-layer MLP + sigmoid, feature × score | $n \times C$ (same as VSA output) |
+| RoI-grid pooling | per proposal | $6 \times 6 \times 6 = 216$ grid points, radii (0.8, 1.6) m |
+| RoI feature | flatten grid features, 2-layer MLP | 256-d per proposal |
+| Heads | IoU-guided confidence + box residual | one score and one box per proposal |
+
+- Waymo: range $[-75.2, 75.2]$ m in X and Y, $[-2, 4]$ m in Z, voxel size $(0.1, 0.1, 0.15)$ m.
+
+### Voxel Set Abstraction: a few thousand keypoints summarise the scene
+
+- The "neighbours" of a keypoint are now **voxels with learned multi-scale features**, not raw points.
+- Each level has two radii, so every keypoint sees four levels × two scales of context.
+> **Builds on.** Farthest point sampling and set abstraction from PointNet++
+> ([walkthrough 01](/walkthroughs/object-detection/pointnet/)) — applied here to voxels instead of raw points.
+
+- **Extended VSA** adds two more sources:
+  - $f^{(raw)}$: set abstraction on raw points — recovers detail lost in voxelization;
+  - $f^{(bev)}$: bilinear interpolation on the $8\times$ BEV map — a larger receptive field along Z.
+- Every source helps a little; the deep levels matter most. Raw points alone give 81.98 moderate AP;
+  all sources together give 84.83 (Table 8, KITTI val).
+
+<Figure>
+  <VoxelSetAbstractionFigure />
+  <span slot="caption">Voxel Set Abstraction on a real scan (top view). FPS spreads the keypoints; each keypoint
+  gathers the non-empty voxels of every backbone level within two radii (larger for coarser levels), plus raw points
+  and a bilinear lookup on the BEV map, and concatenates the six results. Predicted keypoint weighting (next section)
+  then keeps the foreground keypoints strong. Voxels are projected to BEV; occupancy comes from the real points.</span>
+</Figure>
+
+### Predicted Keypoint Weighting
+
+- FPS spreads keypoints evenly, so many describe background.
+- A three-layer MLP with sigmoid predicts a foreground score per keypoint:
+  $\tilde f_i^{(p)} = \mathcal{A}(f_i^{(p)}) \cdot f_i^{(p)}$.
+- Labels come for free, as in PointRCNN: a keypoint inside a ground-truth box is foreground. Trained with focal loss.
+
+> **Builds on.** PointRCNN's free segmentation labels from boxes
+> ([walkthrough 06](/walkthroughs/object-detection/pointrcnn/)).
+- Removing PKW: 84.83 → 82.95 moderate AP (Table 9).
+
+### RoI-grid pooling: points that reach beyond the box
+
+- Sample $6 \times 6 \times 6$ grid points $g_i$ in each proposal; each gathers keypoints within radius $\tilde r$:
+  $\tilde f_i^{(g)} = \max\{ G(\mathcal{M}(\tilde\Psi)) \}$, with $\tilde\Psi$ the set of $[\tilde f_j^{(p)}; p_j - g_i]$.
+- Two radii per grid point; the balls can extend **outside the box** to capture context.
+- Compared with PointRCNN's pooling (points inside the box) and Part-A² RoI-aware pooling (many empty voxels),
+  this reads only informative keypoints.
+- Replacing it with RoI-aware pooling: 84.83 → 82.97 moderate AP (Table 9).
+
+<Figure>
+  <RoiGridPoolingFigure />
+  <span slot="caption">RoI-grid pooling around a real car (top view; each grid column holds 6 grid points in height).
+  One grid point's balls of $\tilde r = 0.8$ and $1.6$ m pick up keypoints inside and outside the proposal; once every
+  grid point has its feature, the $216$ features are flattened and refined into an IoU-guided score and a box residual.
+  The proposal's error and the keypoint density (about KITTI's 2,048 per scene) are illustrative.</span>
+</Figure>
+
+### Heads and losses
+
+- Confidence target from the 3D IoU with the ground truth: $y_k = \min(1, \max(0, 2\,\mathrm{IoU}_k - 0.5))$,
+  trained with binary cross-entropy. A plain classification target gives 82.50 instead of 84.83 (Table 9).
+- Box residuals as in SECOND, smooth L1.
+- Total loss $L = L_{rpn} + L_{seg} + L_{rcnn}$, equal weights; trained end to end
+  (PointRCNN trained its two stages separately).
+- Training: 128 proposals per scene, 1:1 positive/negative, positive if 3D IoU ≥ 0.55; final NMS threshold 0.01.
+
+## Conclusion
+
+### Results
+
+KITTI **test** set, car 3D AP with 40 recall positions (PV-RCNN, Table 1):
+
+| Method | Modality | Easy <span class="better-up">↑</span> | Moderate <span class="better-up">↑</span> | Hard <span class="better-up">↑</span> |
+|---|---|---|---|---|
+| AVOD-FPN | RGB + LiDAR | 83.07 | 71.76 | 65.73 |
+| UberATG-MMF | RGB + LiDAR | 88.40 | 77.43 | 70.22 |
+| SECOND | LiDAR | 83.34 | 72.55 | 65.82 |
+| PointPillars | LiDAR | 82.58 | 74.31 | 68.99 |
+| PointRCNN | LiDAR | 86.96 | 75.64 | 70.70 |
+| STD | LiDAR | 87.95 | 79.71 | 75.09 |
+| Part-A² | LiDAR | 87.81 | 78.49 | 73.51 |
+| **PV-RCNN** | LiDAR | **90.25** | **81.43** | **76.82** |
+
+KITTI **val** set, car, moderate (Tables 2 and 4):
+
+| Method | 3D AP, R11 <span class="better-up">↑</span> | Proposal recall at IoU 0.7 <span class="better-up">↑</span> |
+|---|---|---|
+| SECOND | 76.48 | – |
+| PointRCNN | 78.63 | 74.8 |
+| STD | 79.80 | 76.8 |
+| **PV-RCNN** | **83.90** | **85.5** |
+
+Waymo Open Dataset (v1.0 val), vehicle, LEVEL 1 3D mAP at IoU 0.7 (Table 5):
+
+| Method | Overall <span class="better-up">↑</span> | 0–30 m <span class="better-up">↑</span> | 30–50 m <span class="better-up">↑</span> | 50 m–∞ <span class="better-up">↑</span> |
+|---|---|---|---|---|
+| PointPillars | 56.62 | 81.01 | 51.75 | 27.94 |
+| MVF | 62.93 | 86.30 | 60.02 | 36.02 |
+| **PV-RCNN** | **70.30** | **91.92** | **69.21** | **42.17** |
+
+### Pros and Cons
+
+- **Pros**
+  - Voxel CNN for high-recall proposals, set abstraction for flexible, multi-scale RoI features.
+  - Keypoints compress the scene into a small, fixed-size set; RoI-grid points can look beyond the box.
+  - Trained end to end; large gains far away on Waymo (+9.19 at 30–50 m).
+- **Cons**
+  - Slow: Voxel R-CNN later measures 8.9 FPS, with Voxel Set Abstraction taking about half the run time.
+  - Still anchor-based proposals, with per-class anchor sizes and fixed headings.
+  - Two parallel scene representations (voxels and keypoints) make the pipeline complex.
+
+### Future Work
+
+- Drop anchors in favour of a simpler output representation.
+- Find out whether refinement really needs keypoints and raw points, or whether voxel features suffice.
+
+### Next
+
+- [**CenterPoint**](/walkthroughs/object-detection/centerpoint/) — drop the anchors: detect objects as centre points in BEV.
+- [**Voxel R-CNN**](/walkthroughs/object-detection/voxel-rcnn/) — drop the keypoints: pool RoI features straight
+  from the voxels, at about three times the speed.

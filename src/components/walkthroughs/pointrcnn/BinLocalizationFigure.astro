@@ -1,0 +1,271 @@
+---
+// "Bin-based localisation" for one foreground point of the real car, top view. Beat 1: the point and its
+// 2S × 2S search window (S = 3 m) cut into δ = 0.5 m bins. Beat 2: classify the bin along x. Beat 3: classify
+// the bin along z. Beat 4: regress the residual inside the chosen cell → the centre, then the box.
+// The car is shown at a heading of 25° so that the bins (fixed axes) do not line up with it.
+import { cropScene, loadScene, bevBox } from '../../../lib/walkthroughFiguresB';
+
+const S = 3, DELTA = 0.5, HEAD = 0.44;
+const box = bevBox(loadScene().boxes[2]);
+const r2 = (v: number) => Math.round(v * 100) / 100;
+const c = Math.cos(HEAD), s = Math.sin(HEAD);
+// Car points in a frame centred on the box, rotated to the display heading
+const car = cropScene(box.x - 4, box.x + 4, box.y - 3, box.y + 3, 100000, { ground: false })
+  .filter((p) => p[4] === 2)
+  .map((p) => [p[0] - box.x, p[1] - box.y])
+  .map(([u, v]) => [r2(u * c - v * s), r2(u * s + v * c)]);
+// The foreground point: a point on the near side (facing the sensor), towards the front of the car
+const near = car.filter(([x, z]) => -x * s + z * c < -0.7);
+const along = ([x, z]: number[]) => Math.abs(x * c + z * s - 1.2);
+const fp = near.reduce((a, b) => (along(b) < along(a) ? b : a));
+const thin = car.filter((_, i) => i % 3 === 0);
+// Centre relative to the point → bins and residuals (paper's formula, residual in metres before normalising)
+const dx = -fp[0], dz = -fp[1];
+const binX = Math.floor((dx + S) / DELTA), binZ = Math.floor((dz + S) / DELTA);
+const resX = r2(dx + S - (binX * DELTA + DELTA / 2)), resZ = r2(dz + S - (binZ * DELTA + DELTA / 2));
+const data = { S, DELTA, head: HEAD, l: box.l, w: box.w, car: thin, fp, binX, binZ, resX, resZ };
+---
+<canvas class="wt-canvas binloc-canvas" data-binloc={JSON.stringify(data)}
+  role="img" aria-label="Bin-based localisation: around one foreground point a 6 by 6 metre window is cut into 0.5 metre bins; the network classifies the bin that holds the object centre along x and along z, then regresses a small residual inside it"></canvas>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  import { iconPalette, drawBlock } from '../../../lib/figureIcons';
+  type Data = { S: number; DELTA: number; head: number; l: number; w: number; car: number[][]; fp: number[];
+    binX: number; binZ: number; resX: number; resZ: number };
+
+  const HEADLINE = [
+    'One foreground point: where is its object’s centre?',
+    'Classify the 0.5 m bin along x that holds the centre',
+    'Classify the bin along z: one cell of the window',
+    'Regress a small residual inside the cell: the centre',
+  ];
+  const HEADLINE_SHORT = [
+    'Where is this point’s object centre?',
+    'Classify the bin along x',
+    'Classify the bin along z',
+    'Residual inside the cell: the centre',
+  ];
+
+  document.querySelectorAll<HTMLCanvasElement>('.binloc-canvas').forEach((canvas) => {
+    const d: Data = JSON.parse(canvas.dataset.binloc!);
+    const ctx = canvas.getContext('2d')!;
+    const NB = Math.round((2 * d.S) / d.DELTA);
+    const [fx, fz] = d.fp;
+    // Illustrative bin scores: a softmax that peaks on the true bin
+    const scores = (b: number) => {
+      const e = Array.from({ length: NB }, (_, k) => Math.exp(-((k - b) ** 2) / 1.6));
+      const sum = e.reduce((a, v) => a + v, 0);
+      return e.map((v) => v / sum);
+    };
+    const sX = scores(d.binX), sZ = scores(d.binZ);
+
+    // Beats: window · x bin · z bin · residual + box
+    const T = { win: 0, bx: 4.0, bz: 8.5, res: 13.0, end: 19.5 };
+    const BEATS = [T.win, T.bx, T.bz, T.res];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const teal = css.getPropertyValue('--accent-3').trim() || '#0ea5a0';
+      const border = css.getPropertyValue('--border').trim() || '#e1e5ec';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const orange = dark ? '#ffb86b' : '#d9730d';
+      const neutral = dark ? '#6f7a8e' : '#a3adbb';
+      ctx.clearRect(0, 0, W, H);
+      const pal = iconPalette();
+
+      const beat = t < T.bx ? 0 : t < T.bz ? 1 : t < T.res ? 2 : 3;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+
+      // Layout: window (with score bars below and left of it) on the left, the predicted values on the right
+      const narrow = W < 520;
+      const panelW = narrow ? 0 : 200;
+      const top = 80, bar = narrow ? 22 : 30;
+      const avail = W - panelW - (narrow ? 8 : 40);
+      const side = Math.min(avail - bar - 10, H - top - bar - 12);
+      const px = 2 * d.S / side; // metres per pixel
+      const wx0 = (narrow ? (W - side + bar) / 2 : (avail - side + bar) / 2 + 10), wy0 = top + 4;
+      // World (relative to the point) → canvas; the window is centred on the foreground point
+      const mx = (x: number) => wx0 + (x - fx + d.S) / px, my = (z: number) => wy0 + (d.S - (z - fz)) / px;
+      const cell = d.DELTA / px;
+      const viewCx = wx0 + side / 2;
+
+      // Headline, titles and status lines
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(narrow ? 'Search window' : 'Search window, top view', viewCx, 42);
+      const note = narrow
+        ? [`2S = ${2 * d.S} m, ${NB} bins of ${d.DELTA} m`, `bin_x = ${d.binX}`, `bin_z = ${d.binZ}`, `res = (${d.resX}, ${d.resZ}) m`][beat]
+        : [`2S × 2S = ${2 * d.S} × ${2 * d.S} m, ${NB} bins of δ = ${d.DELTA} m per axis`, `${NB}-way classification along x`, `${NB}-way classification along z`, 'residual inside the cell, smooth L1'][beat];
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(note, viewCx, 60, narrow ? W - 8 : avail);
+
+      const dot = (x: number, y: number, r: number, fill: string) => {
+        ctx.fillStyle = fill;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      };
+      const xOn = beat >= 1 ? ease(ramp(t, T.bx + 0.5, T.bx + 1.5)) : 0;
+      const zOn = beat >= 2 ? ease(ramp(t, T.bz + 0.5, T.bz + 1.5)) : 0;
+      const resOn = beat >= 3 ? ease(ramp(t, T.res + 0.5, T.res + 1.7)) : 0;
+      const boxOn = beat >= 3 ? ease(ramp(t, T.res + 2.4, T.res + 3.2)) : 0;
+      const winOn = ease(ramp(t, 0.6, 1.4));
+
+      // Window grid
+      ctx.globalAlpha = fadeAll * winOn;
+      ctx.strokeStyle = border; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let k = 0; k <= NB; k++) {
+        ctx.moveTo(wx0 + k * cell, wy0); ctx.lineTo(wx0 + k * cell, wy0 + side);
+        ctx.moveTo(wx0, wy0 + k * cell); ctx.lineTo(wx0 + side, wy0 + k * cell);
+      }
+      ctx.stroke();
+      ctx.strokeStyle = faint; ctx.lineWidth = 1.2;
+      ctx.strokeRect(wx0, wy0, side, side);
+      // Chosen column / row / cell (bins count from the window's left and bottom edges)
+      const colX = wx0 + d.binX * cell, rowY = wy0 + side - (d.binZ + 1) * cell;
+      ctx.fillStyle = accent;
+      if (xOn > 0) { ctx.globalAlpha = fadeAll * 0.12 * xOn * (1 - 0.5 * zOn); ctx.fillRect(colX, wy0, cell, side); }
+      if (zOn > 0) { ctx.globalAlpha = fadeAll * 0.12 * zOn * (1 - 0.5 * xOn); ctx.fillRect(wx0, rowY, side, cell); }
+      if (zOn > 0) {
+        ctx.globalAlpha = fadeAll * zOn;
+        ctx.strokeStyle = accent; ctx.lineWidth = 2;
+        ctx.strokeRect(colX, rowY, cell, cell);
+      }
+
+      // Score bars under the window (x) and left of it (z)
+      const bars = (sc: number[], on: number, horiz: boolean, win: number) => {
+        sc.forEach((v, k) => {
+          const len = (bar - 6) * (v / Math.max(...sc)) * on;
+          ctx.globalAlpha = fadeAll * (k === win ? 1 : 0.45);
+          ctx.fillStyle = k === win ? accent : faint;
+          if (horiz) ctx.fillRect(wx0 + k * cell + 1.5, wy0 + side + 4, cell - 3, len);
+          else ctx.fillRect(wx0 - 4 - len, wy0 + side - (k + 1) * cell + 1.5, len, cell - 3);
+        });
+      };
+      if (xOn > 0) bars(sX, xOn, true, d.binX);
+      if (zOn > 0) bars(sZ, zOn, false, d.binZ);
+      ctx.globalAlpha = fadeAll * winOn;
+      ctx.font = `500 ${narrow ? 10 : 11}px "IBM Plex Mono", monospace`;
+      ctx.fillStyle = faint;
+      ctx.textAlign = 'left';
+      ctx.fillText('x →', wx0 + side + 5, wy0 + side + 12);
+      ctx.textAlign = 'center';
+      ctx.fillText('z ↑', wx0 - bar / 2 - 2, wy0 - 4);
+
+      // Car points (clipped to the window) and the foreground point
+      const inWin = (x: number, z: number) => Math.abs(x - fx) < d.S && Math.abs(z - fz) < d.S;
+      for (const [x, z] of d.car) {
+        ctx.globalAlpha = fadeAll * ease(ramp(t, 0, 0.5)) * (inWin(x, z) ? 0.9 : 0.3);
+        dot(mx(x), my(z), narrow ? 1.1 : 1.5, neutral);
+      }
+      ctx.save();
+      ctx.beginPath(); ctx.rect(wx0, wy0, side, side); ctx.clip();
+      // Box of the object (end of beat 4)
+      if (boxOn > 0) {
+        const c = Math.cos(d.head), s = Math.sin(d.head);
+        ctx.globalAlpha = fadeAll * boxOn;
+        ctx.strokeStyle = teal; ctx.lineWidth = 2;
+        ctx.beginPath();
+        [[1, 1], [1, -1], [-1, -1], [-1, 1]].forEach(([a, b], k) => {
+          const x = (a * d.l / 2) * c - (b * d.w / 2) * s, z = (a * d.l / 2) * s + (b * d.w / 2) * c;
+          if (k === 0) ctx.moveTo(mx(x), my(z)); else ctx.lineTo(mx(x), my(z));
+        });
+        ctx.closePath(); ctx.stroke();
+        // Heading tick
+        ctx.beginPath(); ctx.moveTo(mx(0), my(0)); ctx.lineTo(mx((d.l / 2) * c), my((d.l / 2) * s)); ctx.stroke();
+      }
+      ctx.restore();
+
+      // Residual arrow: from the cell centre to the true centre
+      const ccx = colX + cell / 2, ccy = rowY + cell / 2;
+      if (zOn > 0) { ctx.globalAlpha = fadeAll * zOn; dot(ccx, ccy, 2.2, accent); }
+      if (resOn > 0) {
+        const tx = mx(0), ty = my(0);
+        const ex = ccx + (tx - ccx) * resOn, ey = ccy + (ty - ccy) * resOn;
+        ctx.globalAlpha = fadeAll;
+        ctx.strokeStyle = red; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(ccx, ccy); ctx.lineTo(ex, ey); ctx.stroke();
+        dot(ex, ey, 3.5, red);
+      }
+      ctx.globalAlpha = fadeAll;
+      dot(mx(fx), my(fz), 4, orange);
+      ctx.strokeStyle = orange; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(mx(fx), my(fz), 8, 0, Math.PI * 2); ctx.stroke();
+
+      // The stage-1 box head (a shared MLP on every foreground point's feature) that predicts the bins
+      {
+        const gx0 = wx0 + side + (narrow ? 8 : 34), gx1 = narrow ? W - 2 : W - panelW - 16;
+        const bw = Math.min(narrow ? 44 : 64, gx1 - gx0 - 8), bh = narrow ? 32 : 44;
+        const bx = (gx0 + gx1) / 2 - bw / 2, byy = wy0 + side / 2 - bh / 2 - 8;
+        const act = beat >= 1 ? ease(ramp(t, BEATS[beat] + 0.2, BEATS[beat] + 1.0)) * (beat === 3 ? 0.6 : 1) : 0;
+        drawBlock(ctx, 'mlp', bx, byy, bw, bh, pal, { label: 'box head', sub: narrow ? undefined : 'bins + residuals', shared: true, active: act, alpha: fadeAll * (beat >= 1 ? 1 : 0.4), compact: narrow });
+      }
+      // Panel: what the head predicts for this point
+      if (!narrow) {
+        const x0 = W - panelW - 10;
+        const rows = [
+          { k: 'bin_x', v: `${d.binX}  (of ${NB} bins)`, on: beat >= 1, b: 1 },
+          { k: 'bin_z', v: `${d.binZ}  (of ${NB} bins)`, on: beat >= 2, b: 2 },
+          { k: 'res_x, res_z', v: `${d.resX >= 0 ? '+' : ''}${d.resX}, ${d.resZ >= 0 ? '+' : ''}${d.resZ} m`, on: beat >= 3, b: 3 },
+          { k: 'y, h, w, l', v: 'residual only', on: beat >= 3, b: 3 },
+          { k: 'heading θ', v: '12 bins + residual', on: beat >= 3, b: 3 },
+        ];
+        ctx.textAlign = 'left';
+        ctx.font = `600 14px Sora, sans-serif`;
+        ctx.fillStyle = heading;
+        ctx.globalAlpha = fadeAll;
+        ctx.fillText('Predicted for this point', x0, 42, panelW);
+        rows.forEach((r, k) => {
+          const y = top + 18 + k * 50;
+          ctx.globalAlpha = fadeAll * (r.on ? 1 : 0.35);
+          ctx.font = `500 11px "IBM Plex Sans", sans-serif`;
+          ctx.fillStyle = faint;
+          ctx.fillText(r.k, x0, y, panelW);
+          ctx.font = `600 14px "IBM Plex Mono", monospace`;
+          ctx.fillStyle = r.on ? (r.b === beat ? accent : text) : faint;
+          ctx.fillText(r.on ? r.v : '?', x0, y + 19, panelW);
+        });
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.end - 1); });
+    if (still) { frame(T.end - 1); return; }
+    // The loop starts at beat 1 when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

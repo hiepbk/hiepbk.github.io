@@ -1,0 +1,475 @@
+---
+// "PointNet, layer by layer" (after Fig. 2 of the paper): the whole network, run stage by stage on the real
+// car. Each beat matches one row of the tensor-shape table above it: Input n × 3 · Input transform ·
+// Shared MLP (64, 64) · Feature transform · Shared MLP (64, 128, 1024) · Max pool · MLP (512, 256, k), then
+// the segmentation branch (n × 1088 → shared MLP (512, 256, 128) → shared MLP (128, m) → n × m).
+// Every layer is a block icon from figureIcons; it lights up while the data passes through it, and a tag next
+// to it repeats the table row (stage name · output shape). Feature values are illustrative; the global feature
+// really is the column-wise max of the n × 1024 block. Part labels (roof / windows / body) are illustrative.
+import { loadCar, farthestPointSample } from '../../lib/walkthroughData';
+
+const points = farthestPointSample(loadCar(), 256);
+const labels = points.map(([u, , z]) => (z >= 1.55 ? 2 : z >= 1.1 && u < 0.9 ? 1 : 0));
+---
+<canvas class="wt-canvas pnarch-canvas" data-arch={JSON.stringify({ points, labels })}
+  role="img" aria-label="PointNet architecture run stage by stage: n × 3 input points, input transform, shared MLP (64, 64), feature transform, shared MLP (64, 128, 1024), max pool to a 1 × 1024 global feature, MLP (512, 256, k) to k class scores; segmentation branch: n × 1088, shared MLP (512, 256, 128), shared MLP (128, m), n × m per-point scores"></canvas>
+
+<style is:global>
+  .wt-figure .wt-canvas.pnarch-canvas { height: 480px; }
+</style>
+
+<script>
+  import { FIGURE_SPEED } from '../../lib/figureClock';
+  import { iconPalette, drawBlock, drawArrow, type BlockKind } from '../../lib/figureIcons';
+  type P = [number, number, number];
+
+  const HEADLINE = [
+    'Input: n points, each (x, y, z) → n × 3',
+    'Input transform: a T-Net predicts a 3 × 3 matrix; multiply → n × 3',
+    'Shared MLP (64, 64): the same MLP on every point → n × 64',
+    'Feature transform: a T-Net predicts a 64 × 64 matrix; multiply → n × 64',
+    'Shared MLP (64, 128, 1024): the same MLP on every point → n × 1024',
+    'Max pool over the n points → 1 × 1024 global feature',
+    'MLP (512, 256, k) on the global feature → k class scores',
+    'Segmentation: 64 local + 1024 global features per point → n × 1088',
+    'Shared MLP (512, 256, 128) on every point → n × 128',
+    'Shared MLP (128, m) → n × m scores, one part label per point',
+  ];
+  const HEADLINE_SHORT = [
+    'Input: n points → n × 3',
+    'Input transform: T-Net 3 × 3, multiply',
+    'Shared MLP (64, 64) → n × 64',
+    'Feature transform: T-Net 64 × 64',
+    'Shared MLP (64, 128, 1024) → n × 1024',
+    'Max pool → 1 × 1024 global feature',
+    'MLP (512, 256, k) → k class scores',
+    'Local + global per point → n × 1088',
+    'Shared MLP (512, 256, 128) → n × 128',
+    'Shared MLP (128, m) → n × m labels',
+  ];
+  // The table row of each beat (stage name · shape), shown in a tag next to the active block
+  const TAG = [
+    'Input · n × 3', 'Input transform · n × 3', 'Shared MLP (64, 64) · n × 64', 'Feature transform · n × 64',
+    'Shared MLP (64, 128, 1024) · n × 1024', 'Max pool · 1 × 1024', 'MLP (512, 256, k) · k',
+    'Concatenate · n × 1088', 'Shared MLP (512, 256, 128) · n × 128', 'Shared MLP (128, m) · n × m',
+  ];
+  const STATUS = (b: number) => (b < 7 ? `Classification network · table row ${b + 1} of 7` : `Segmentation branch · step ${b - 6} of 3`);
+  const PARTS = ['body', 'windows', 'roof'];
+
+  type Kind = 'car' | 'tensor' | 'block' | 'x' | 'strip' | 'bars';
+  type Spec = { kind: Kind; label?: string; sub?: string; icon?: BlockKind; shared?: boolean; cells?: number; shade?: string; yaw?: number; tilt?: number; parts?: boolean };
+  const SPEC: Record<string, Spec> = {
+    in: { kind: 'car', label: 'n × 3', yaw: -1.05, tilt: 0.32 },
+    tnet1: { kind: 'block', icon: 'mlp', label: 'T-Net', sub: '3 × 3' },
+    x1: { kind: 'x' },
+    car3: { kind: 'car', label: 'n × 3', yaw: -0.38, tilt: 0 },
+    mlp1: { kind: 'block', icon: 'mlp', label: 'shared MLP', sub: '(64, 64)', shared: true },
+    t64a: { kind: 'tensor', label: 'n × 64', cells: 6, shade: 'local' },
+    tnet2: { kind: 'block', icon: 'mlp', label: 'T-Net', sub: '64 × 64' },
+    x2: { kind: 'x' },
+    t64b: { kind: 'tensor', label: 'n × 64', cells: 6, shade: 'local' },
+    mlp2: { kind: 'block', icon: 'mlp', label: 'shared MLP', sub: '(64, 128, 1024)', shared: true },
+    t1024: { kind: 'tensor', label: 'n × 1024', cells: 16, shade: 'feat' },
+    pool: { kind: 'block', icon: 'maxpool', label: 'max pool', sub: 'over n' },
+    glob: { kind: 'strip', label: '1 × 1024', cells: 16 },
+    mlp3: { kind: 'block', icon: 'mlp', label: 'MLP', sub: '(512, 256, k)' },
+    k: { kind: 'bars', label: 'k scores' },
+    t1088: { kind: 'tensor', label: 'n × 1088', cells: 22, shade: 'concat' },
+    mlp4: { kind: 'block', icon: 'mlp', label: 'shared MLP', sub: '(512, 256, 128)', shared: true },
+    t128: { kind: 'tensor', label: 'n × 128', cells: 8, shade: 'feat2' },
+    mlp5: { kind: 'block', icon: 'mlp', label: 'shared MLP', sub: '(128, m)', shared: true },
+    tm: { kind: 'tensor', label: 'n × m', cells: 3, shade: 'parts' },
+    out: { kind: 'car', label: 'labels', yaw: -0.38, tilt: 0, parts: true },
+  };
+  const ROWS_WIDE = [['in', 'tnet1', 'x1', 'car3', 'mlp1', 't64a', 'tnet2', 'x2', 't64b'], ['mlp2', 't1024', 'pool', 'glob', 'mlp3', 'k'], ['t1088', 'mlp4', 't128', 'mlp5', 'tm', 'out']];
+  const ROWS_NARROW = [['in', 'tnet1', 'x1', 'car3', 'mlp1'], ['t64a', 'tnet2', 'x2', 't64b', 'mlp2', 't1024'], ['pool', 'glob', 'mlp3', 'k'], ['t1088', 'mlp4', 't128', 'mlp5', 'tm', 'out']];
+  // Arrows: [from, to, skip?] — a skip arrow branches off above a T-Net into the matrix multiply
+  const EDGES: [string, string, boolean?][] = [
+    ['in', 'tnet1'], ['in', 'x1', true], ['tnet1', 'x1'], ['x1', 'car3'], ['car3', 'mlp1'], ['mlp1', 't64a'],
+    ['t64a', 'tnet2'], ['t64a', 'x2', true], ['tnet2', 'x2'], ['x2', 't64b'], ['t64b', 'mlp2'], ['mlp2', 't1024'],
+    ['t1024', 'pool'], ['pool', 'glob'], ['glob', 'mlp3'], ['mlp3', 'k'],
+    ['t1088', 'mlp4'], ['mlp4', 't128'], ['t128', 'mlp5'], ['mlp5', 'tm'], ['tm', 'out'],
+  ];
+  // Per beat: duration, the item carrying the tag, blocks lit, arrows a data pulse runs along [from, to, t0, t1],
+  // items produced [item, t0, t1] (relative to the beat start), and the shared-MLP row sweep [input, output].
+  type Beat = { d: number; tag: string; act: string[]; pulse: [string, string, number, number][]; make: [string, number, number][]; sweep?: [string, string] };
+  const BEATS: Beat[] = [
+    { d: 3.5, tag: 'in', act: [], pulse: [], make: [['in', 0.3, 1.4]] },
+    { d: 4.5, tag: 'tnet1', act: ['tnet1', 'x1'], pulse: [['in', 'tnet1', 0.3, 1.0], ['in', 'x1', 0.3, 1.3], ['tnet1', 'x1', 1.3, 1.8], ['x1', 'car3', 1.8, 2.2]], make: [['car3', 2.1, 3.0]] },
+    { d: 4.5, tag: 'mlp1', act: ['mlp1'], pulse: [['car3', 'mlp1', 0.3, 1.0], ['mlp1', 't64a', 1.1, 1.5]], make: [['t64a', 1.5, 3.2]], sweep: ['car3', 't64a'] },
+    { d: 4.5, tag: 'tnet2', act: ['tnet2', 'x2'], pulse: [['t64a', 'tnet2', 0.3, 1.0], ['t64a', 'x2', 0.3, 1.3], ['tnet2', 'x2', 1.3, 1.8], ['x2', 't64b', 1.8, 2.2]], make: [['t64b', 2.1, 3.0]] },
+    { d: 4.5, tag: 'mlp2', act: ['mlp2'], pulse: [['t64b', 'mlp2', 0.3, 1.1], ['mlp2', 't1024', 1.2, 1.6]], make: [['t1024', 1.6, 3.3]], sweep: ['t64b', 't1024'] },
+    { d: 4.5, tag: 'pool', act: ['pool'], pulse: [['t1024', 'pool', 0.3, 1.0], ['pool', 'glob', 1.1, 1.5]], make: [['glob', 1.5, 3.3]] },
+    { d: 4.5, tag: 'mlp3', act: ['mlp3'], pulse: [['glob', 'mlp3', 0.3, 1.0], ['mlp3', 'k', 1.1, 1.5]], make: [['k', 1.5, 2.8]] },
+    { d: 4.5, tag: 't1088', act: [], pulse: [], make: [['t1088', 2.2, 2.4]] },
+    { d: 4.5, tag: 'mlp4', act: ['mlp4'], pulse: [['t1088', 'mlp4', 0.3, 1.0], ['mlp4', 't128', 1.1, 1.5]], make: [['t128', 1.5, 3.2]], sweep: ['t1088', 't128'] },
+    { d: 6.5, tag: 'mlp5', act: ['mlp5'], pulse: [['t128', 'mlp5', 0.3, 1.0], ['mlp5', 'tm', 1.1, 1.5], ['tm', 'out', 3.2, 3.6]], make: [['tm', 1.5, 3.2], ['out', 3.6, 5.0]], sweep: ['t128', 'tm'] },
+  ];
+  const START: number[] = [];
+  BEATS.reduce((s, b, i) => ((START[i] = s), s + b.d), 0);
+  const END = START[BEATS.length - 1] + BEATS[BEATS.length - 1].d;
+  const FLY = [0.5, 2.2]; // concat beat: local block and global strip fly into n × 1088
+  const R = 16;           // rows drawn per n × C tensor
+
+  document.querySelectorAll<HTMLCanvasElement>('.pnarch-canvas').forEach((canvas) => {
+    const { points: pts, labels }: { points: P[]; labels: number[] } = JSON.parse(canvas.dataset.arch!);
+    const ctx = canvas.getContext('2d')!;
+    const N = pts.length;
+
+    // When each item is produced / reached
+    const ready: Record<string, number> = {};
+    BEATS.forEach((b, i) => {
+      for (const [id, a] of b.make) ready[id] = START[i] + a;
+      for (const id of b.act) ready[id] = START[i] + 0.3;
+    });
+    const fillOf = (id: string, t: number) => {
+      for (let i = 0; i < BEATS.length; i++) for (const [m, a, z] of BEATS[i].make) if (m === id) return ramp(t, START[i] + a, START[i] + z);
+      return 1;
+    };
+
+    // Illustrative feature values in [0, 1]; the global feature is the column-wise max of n × 1024
+    const val = (id: number, i: number, k: number) => 0.5 + 0.5 * Math.sin(i * 1.7 + k * 2.3 + id * 0.9 + 1.3 * Math.sin(i * k * 0.37 + id));
+    const feats: Record<string, number[][]> = {
+      t64a: tab(6, 1), t64b: tab(6, 2), t1024: tab(16, 3), t128: tab(8, 4),
+    };
+    function tab(c: number, id: number) { return Array.from({ length: R }, (_, i) => Array.from({ length: c }, (_, k) => val(id, i, k))); }
+    const winner = Array.from({ length: 16 }, (_, k) => feats.t1024.reduce((b, f, i) => (f[k] > feats.t1024[b][k] ? i : b), 0));
+    const global = winner.map((i, k) => feats.t1024[i][k]);
+    const rowLabel = Array.from({ length: R }, (_, i) => labels[Math.floor((i * N) / R)]);
+    const SCORES = [0.35, 0.2, 0.92, 0.3, 0.5, 0.15, 0.4, 0.25];
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      layout();
+    };
+
+    // ---------- layout ----------
+    type Box = { x: number; cy: number; w: number; h: number; row: number };
+    const box: Record<string, Box> = {};
+    let narrow = false, bw = 56, bh = 40, th = 52, cw = 4.5, rad = 7;
+    const carCache: Record<string, [number, number][]> = {};
+    function layout() {
+      narrow = W < 600;
+      bw = narrow ? 38 : 56; bh = narrow ? 28 : 40; th = narrow ? 40 : 52; cw = narrow ? 3 : 4.5; rad = narrow ? 6 : 7;
+      const carW = narrow ? 60 : 90, g = narrow ? 14 : 22, gs = narrow ? 8 : 12, gx = narrow ? 12 : 16;
+      const rows = narrow ? ROWS_NARROW : ROWS_WIDE;
+      const pitch = narrow ? 104 : 135;
+      const top = Math.round((H - (rows.length - 1) * pitch) / 2) + (narrow ? 12 : 16);
+      const margin = narrow ? 14 : 20;
+      rows.forEach((row, r) => {
+        const ws = row.map((id) => {
+          const s = SPEC[id];
+          return s.kind === 'car' ? carW : s.kind === 'block' ? bw : s.kind === 'x' ? 2 * rad
+            : s.kind === 'bars' ? SCORES.length * (narrow ? 4 : 5) : (s.cells ?? 1) * cw;
+        });
+        const gaps = row.slice(1).map((id, k) => (SPEC[id].kind === 'x' ? gs : SPEC[row[k]].kind === 'x' ? gx : g));
+        const natural = ws.reduce((a, v) => a + v, 0) + gaps.reduce((a, v) => a + v, 0);
+        const scale = Math.min(2.4, Math.max(1, (W - 2 * margin - natural) / gaps.reduce((a, v) => a + v, 0) + 1));
+        let x = margin;
+        row.forEach((id, k) => {
+          const s = SPEC[id];
+          const h = s.kind === 'block' ? bh : s.kind === 'x' ? 2 * rad : s.kind === 'strip' ? (narrow ? 6 : 8) : th;
+          box[id] = { x, cy: top + r * pitch, w: ws[k], h, row: r };
+          x += ws[k] + (gaps[k] ?? 0) * scale;
+        });
+      });
+      for (const k in carCache) delete carCache[k];
+    }
+
+    // Car points projected into an item's box (cached per layout)
+    function carXY(id: string) {
+      if (carCache[id]) return carCache[id];
+      const s = SPEC[id], b = box[id];
+      const ca = Math.cos(s.yaw!), sa = Math.sin(s.yaw!), ct = Math.cos(s.tilt!), st = Math.sin(s.tilt!);
+      const raw = pts.map((p) => {
+        const u = p[0] * ca - p[1] * sa, v = p[0] * sa + p[1] * ca;
+        const x = u, y = -p[2] + v * 0.35;
+        return [x * ct - y * st, x * st + y * ct] as [number, number];
+      });
+      const xs = raw.map((q) => q[0]), ys = raw.map((q) => q[1]);
+      const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+      const S = Math.min((b.w - 4) / (x1 - x0), (b.h - 4) / (y1 - y0));
+      const cx = b.x + b.w / 2, cy = b.cy;
+      return (carCache[id] = raw.map(([x, y]) => [cx + (x - (x0 + x1) / 2) * S, cy + (y - (y0 + y1) / 2) * S]));
+    }
+
+    // Polyline of an arrow between two items
+    function route(a: string, b: string, skip?: boolean): [number, number][] {
+      const A = box[a], B = box[b];
+      if (skip) {
+        const x0 = A.x + A.w + (narrow ? 8 : 10), yA = A.cy - bh / 2 - 9;
+        return [[x0, A.cy], [x0, yA], [B.x + B.w / 2, yA], [B.x + B.w / 2, B.cy - rad]];
+      }
+      if (A.row === B.row) return [[A.x + A.w + 3, A.cy], [B.x - 3, B.cy]];
+      const xr = A.x + A.w + 3, xo = Math.min(W - 3, A.x + A.w + 12), yMid = A.cy + bh / 2 + (narrow ? 27 : 34), xl = Math.max(3, B.x - 10);
+      return [[xr, A.cy], [xo, A.cy], [xo, yMid], [xl, yMid], [xl, B.cy], [B.x - 3, B.cy]];
+    }
+    function along(path: [number, number][], f: number): [number, number] {
+      const seg = path.slice(1).map((p, i) => Math.hypot(p[0] - path[i][0], p[1] - path[i][1]));
+      let d = f * seg.reduce((a, v) => a + v, 0);
+      for (let i = 0; i < seg.length; i++) {
+        if (d <= seg[i] || i === seg.length - 1) {
+          const q = seg[i] ? Math.min(1, d / seg[i]) : 1;
+          return [path[i][0] + (path[i + 1][0] - path[i][0]) * q, path[i][1] + (path[i + 1][1] - path[i][1]) * q];
+        }
+        d -= seg[i];
+      }
+      return path[path.length - 1];
+    }
+
+    function frame(time: number) {
+      const t = time % END;
+      const pal = iconPalette();
+      const css = getComputedStyle(document.documentElement);
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const dark = pal.dark;
+      ctx.clearRect(0, 0, W, H);
+      let beat = 0;
+      while (beat + 1 < BEATS.length && t >= START[beat + 1]) beat++;
+      const B0 = START[beat], bt = t - B0;
+      const fadeAll = 1 - ramp(t, END - 0.5, END);
+      const FAINT = 0.22;
+      const shown = (id: string) => FAINT + (1 - FAINT) * ease(ramp(t, ready[id] ?? 0, (ready[id] ?? 0) + 0.4));
+      const partColor = (l: number, a = 1) =>
+        [`hsl(222 80% ${dark ? 66 : 55}% / ${a})`, `hsl(178 75% ${dark ? 50 : 38}% / ${a})`, `hsl(36 92% ${dark ? 58 : 50}% / ${a})`][l];
+      const shade: Record<string, (f: number) => string> = {
+        local: (f) => (dark ? `hsl(222 45% ${22 + f * 45}%)` : `hsl(222 55% ${88 - f * 50}%)`),
+        feat: (f) => (dark ? `hsl(190 40% ${20 + f * 45}%)` : `hsl(190 50% ${90 - f * 50}%)`),
+        feat2: (f) => (dark ? `hsl(160 40% ${20 + f * 45}%)` : `hsl(160 45% ${90 - f * 50}%)`),
+        global: (f) => (dark ? `hsl(265 45% ${22 + f * 45}%)` : `hsl(265 60% ${90 - f * 45}%)`),
+      };
+      const cellColor = (id: string, i: number, k: number) => {
+        const s = SPEC[id].shade;
+        if (s === 'parts') return k === rowLabel[i] ? partColor(k) : partColor(k, 0.18);
+        if (s === 'concat') return k < 6 ? shade.local(feats.t64b[i][k]) : shade.global(global[k - 6]);
+        return shade[s!](feats[id][i][k]);
+      };
+
+      // Headline and status line
+      ctx.textAlign = 'center';
+      ctx.globalAlpha = fadeAll * ease(ramp(bt, 0.05, 0.45));
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = dark ? '#ff6b6b' : '#dc2626';
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+      ctx.globalAlpha = fadeAll;
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = pal.accent;
+      ctx.fillText(STATUS(beat), W / 2, narrow ? 34 : 38);
+
+      // Arrows (faint until data has passed along them)
+      const pulseEnd: Record<string, number> = {};
+      BEATS.forEach((b, i) => b.pulse.forEach(([a, z, , e]) => (pulseEnd[a + '>' + z] = START[i] + e)));
+      for (const [a, z, skip] of EDGES) {
+        const path = route(a, z, skip), e = pulseEnd[a + '>' + z] ?? 0;
+        const al = fadeAll * (FAINT + (1 - FAINT) * ramp(t, e - 0.1, e + 0.2));
+        ctx.globalAlpha = al;
+        ctx.strokeStyle = pal.ink; ctx.lineWidth = 1.4;
+        ctx.beginPath(); ctx.moveTo(path[0][0], path[0][1]);
+        for (let k = 1; k < path.length - 1; k++) ctx.lineTo(path[k][0], path[k][1]);
+        ctx.stroke();
+        const [p, q] = [path[path.length - 2], path[path.length - 1]];
+        drawArrow(ctx, p[0], p[1], q[0], q[1], pal, undefined, 1);
+      }
+      ctx.globalAlpha = fadeAll;
+
+      // Items
+      for (const id in SPEC) {
+        const s = SPEC[id], b = box[id];
+        if (!b) continue;
+        const al = fadeAll * shown(id);
+        ctx.globalAlpha = al;
+        const top = b.cy - b.h / 2;
+        if (s.kind === 'block') {
+          const bi = BEATS.findIndex((x) => x.act.includes(id));
+          const act = bi < 0 ? 0 : ramp(t, START[bi] + 0.8, START[bi] + 1.2) * (1 - ramp(t, START[bi] + BEATS[bi].d - 0.3, START[bi] + BEATS[bi].d + 0.3));
+          drawBlock(ctx, s.icon!, b.x, top, b.w, b.h, pal, { label: s.label, sub: s.sub, shared: s.shared, active: act, compact: narrow });
+        } else if (s.kind === 'x') {
+          const bi = BEATS.findIndex((x) => x.act.includes(id));
+          const act = bi < 0 ? 0 : ramp(t, START[bi] + 1.3, START[bi] + 1.8) * (1 - ramp(t, START[bi] + BEATS[bi].d - 0.3, START[bi] + BEATS[bi].d + 0.3));
+          ctx.beginPath(); ctx.arc(b.x + rad, b.cy, rad, 0, Math.PI * 2);
+          ctx.fillStyle = pal.neuron; ctx.fill();
+          ctx.strokeStyle = act > 0.05 ? pal.accent : pal.ink; ctx.lineWidth = 1.2 + act; ctx.stroke();
+          const d = rad * 0.45;
+          ctx.beginPath(); ctx.moveTo(b.x + rad - d, b.cy - d); ctx.lineTo(b.x + rad + d, b.cy + d);
+          ctx.moveTo(b.x + rad + d, b.cy - d); ctx.lineTo(b.x + rad - d, b.cy + d); ctx.stroke();
+        } else {
+          // Shape label above the data
+          ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+          ctx.fillStyle = pal.muted; ctx.textAlign = 'center';
+          ctx.fillText(s.label!, b.x + b.w / 2, b.cy - th / 2 - 6);
+          const fill = fillOf(id, t);
+          if (s.kind === 'car') {
+            const xy = carXY(id);
+            const r = narrow ? 0.9 : 1.15;
+            xy.forEach(([px, py], i) => {
+              const on = id === 'in' || id === 'car3' ? i < fill * N || fill >= 1 : true;
+              if (!on) return;
+              const col = s.parts && i < fill * N ? partColor(labels[i]) : pal.muted;
+              ctx.fillStyle = col;
+              ctx.fillRect(px - r, py - r, 2 * r, 2 * r);
+            });
+          } else if (s.kind === 'tensor') {
+            if (id === 't1088' && beat === 7 && bt < FLY[1] + 0.2) {
+              // drawn by the flights below until they land
+            } else {
+              const cells = s.cells!, rh = b.h / R;
+              for (let i = 0; i < R; i++) {
+                if (i >= fill * R && fill < 1) continue;
+                for (let k = 0; k < cells; k++) {
+                  ctx.fillStyle = cellColor(id, i, k);
+                  ctx.fillRect(b.x + k * cw, top + i * rh, cw - 0.5, rh - 0.5);
+                }
+              }
+            }
+            ctx.strokeStyle = faint; ctx.lineWidth = 1;
+            ctx.strokeRect(b.x - 0.5, top - 0.5, b.w + 0.5, b.h + 0.5);
+          } else if (s.kind === 'strip') {
+            for (let k = 0; k < 16; k++) {
+              if (k >= fill * 16 && fill < 1) continue;
+              ctx.fillStyle = shade.global(global[k]);
+              ctx.fillRect(b.x + k * cw, top, cw - 0.5, b.h);
+            }
+            ctx.strokeStyle = faint; ctx.lineWidth = 1;
+            ctx.strokeRect(b.x - 0.5, top - 0.5, b.w + 0.5, b.h + 0.5);
+          } else if (s.kind === 'bars') {
+            const n = SCORES.length, w1 = b.w / n, base = b.cy + th / 2 - 12;
+            SCORES.forEach((v, k) => {
+              const hh = v * (th - 16) * ease(fill);
+              ctx.fillStyle = v === 0.92 ? pal.accent : faint;
+              ctx.fillRect(b.x + k * w1, base - hh, w1 - 1, hh);
+            });
+            ctx.strokeStyle = faint; ctx.beginPath(); ctx.moveTo(b.x - 1, base + 0.5); ctx.lineTo(b.x + b.w, base + 0.5); ctx.stroke();
+            if (fill >= 1) {
+              ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+              ctx.fillStyle = pal.accent; ctx.textAlign = 'center';
+              ctx.fillText('car', b.x + (2.5 * b.w) / n, base + (narrow ? 10 : 12));
+            }
+          }
+        }
+      }
+      ctx.globalAlpha = fadeAll;
+
+      // Shared MLP: the same row of the input and of the output is highlighted, row after row
+      const cur = BEATS[beat];
+      if (cur.sweep) {
+        const [a, z] = cur.sweep;
+        const mk = cur.make.find((m) => m[0] === z)!;
+        const f = ramp(bt, mk[1], mk[2]);
+        if (f > 0 && f < 1) {
+          const i = Math.min(R - 1, Math.floor(f * R));
+          ctx.strokeStyle = dark ? '#ffffff' : '#111827'; ctx.lineWidth = 1.2;
+          for (const id of [a, z]) {
+            const b = box[id], rh = b.h / R, top = b.cy - b.h / 2;
+            if (SPEC[id].kind === 'car') {
+              const [px, py] = carXY(id)[Math.floor((i * N) / R)];
+              ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI * 2); ctx.stroke();
+            } else ctx.strokeRect(b.x - 1.5, top + i * rh - 1, b.w + 3, rh + 2);
+          }
+        }
+      }
+      // Max pool: the winning cell of each column is outlined as its column enters the global strip
+      if (beat === 5) {
+        const f = fillOf('glob', t), b = box.t1024, rh = b.h / R, top = b.cy - b.h / 2;
+        ctx.strokeStyle = dark ? '#ffffff' : '#111827'; ctx.lineWidth = 1.2;
+        for (let k = 0; k < 16 && k < f * 16; k++) ctx.strokeRect(b.x + k * cw - 0.5, top + winner[k] * rh - 0.5, cw, rh + 1);
+      }
+      // Concatenate: the local n × 64 block and the global strip (copied to n rows) fly into n × 1088
+      if (beat === 7 && bt < FLY[1] + 0.2) {
+        const f = ease(ramp(bt, FLY[0], FLY[1]));
+        const T = box.t1088, ttop = T.cy - T.h / 2, rh = T.h / R;
+        const L = box.t64b, G = box.glob;
+        const lerp = (a: number, z: number) => a + (z - a) * f;
+        const lx = lerp(L.x, T.x), ly = lerp(L.cy - L.h / 2, ttop);
+        for (let i = 0; i < R; i++) for (let k = 0; k < 6; k++) {
+          ctx.fillStyle = shade.local(feats.t64b[i][k]);
+          ctx.fillRect(lx + k * cw, ly + i * rh, cw - 0.5, rh - 0.5);
+        }
+        const gx = lerp(G.x, T.x + 6 * cw), gy = lerp(G.cy - G.h / 2, ttop), gh = lerp(G.h, T.h);
+        for (let i = 0; i < R; i++) for (let k = 0; k < 16; k++) {
+          ctx.fillStyle = shade.global(global[k]);
+          ctx.fillRect(gx + k * cw, gy + (i * gh) / R, cw - 0.5, gh / R - (f > 0.5 ? 0.5 : 0));
+        }
+      }
+      // Under n × 1088: which part is local and which is global
+      if (t >= ready.t1088) {
+        const T = box.t1088, y = T.cy + T.h / 2 + (narrow ? 10 : 12);
+        ctx.font = `500 ${narrow ? 8 : 10}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = pal.muted; ctx.textAlign = 'center';
+        ctx.fillText('64', T.x + 3 * cw, y);
+        ctx.fillText('+ 1024', T.x + 6 * cw + 8 * cw, y);
+      }
+
+      // Data pulses running along the arrows of the current beat
+      for (const [a, z, s0, s1] of cur.pulse) {
+        const f = ramp(bt, s0, s1);
+        if (f <= 0 || f >= 1) continue;
+        const skip = EDGES.find((e) => e[0] === a && e[1] === z)?.[2];
+        const [px, py] = along(route(a, z, skip), ease(f));
+        ctx.save();
+        ctx.shadowColor = pal.accent; ctx.shadowBlur = 8;
+        ctx.fillStyle = pal.accent;
+        ctx.beginPath(); ctx.arc(px, py, 3.5, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+
+      // Tag next to the active stage: the table row (stage · shape)
+      {
+        const b = box[cur.tag], s = SPEC[cur.tag];
+        const a = fadeAll * ease(ramp(bt, 0.2, 0.6));
+        ctx.globalAlpha = a;
+        ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+        const tw = ctx.measureText(TAG[beat]).width + 14, hh = narrow ? 15 : 18;
+        const above = s.kind === 'block' ? bh / 2 + (narrow ? 28 : 30) : th / 2 + (narrow ? 25 : 30);
+        const cx = Math.min(W - tw / 2 - 2, Math.max(tw / 2 + 2, b.x + b.w / 2)), cy = b.cy - above;
+        const x0 = cx - tw / 2, y0 = cy - hh / 2;
+        ctx.beginPath(); ctx.roundRect(x0, y0, tw, hh, hh / 2);
+        ctx.fillStyle = pal.neuron; ctx.fill();
+        ctx.strokeStyle = pal.accent; ctx.lineWidth = 1.2; ctx.stroke();
+        ctx.fillStyle = pal.accent; ctx.textAlign = 'center';
+        ctx.fillText(TAG[beat], cx, cy + (narrow ? 3 : 4));
+      }
+
+      // Part legend once the labels appear
+      if (beat === 9 && bt > 3.6) {
+        ctx.globalAlpha = fadeAll * ease(ramp(bt, 3.6, 4.1));
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.textAlign = 'left';
+        const items = [2, 1, 0], widths = items.map((l) => 20 + ctx.measureText(PARTS[l]).width);
+        const total = widths.reduce((s, v) => s + v, 0), O = box.out;
+        let x = (narrow ? W / 2 - total / 2 : Math.min(W - total - 2, O.x + O.w / 2 - total / 2)) + 4;
+        const y = O.cy + th / 2 + (narrow ? 32 : 16);
+        items.forEach((l, k) => {
+          ctx.fillStyle = partColor(l);
+          ctx.beginPath(); ctx.arc(x, y - 3, 3.5, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = pal.muted;
+          ctx.fillText(PARTS[l], x + 7, y);
+          x += widths[k];
+        });
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(END - 1); });
+    if (still) { frame(END - 1); return; }
+    // The loop starts at the first beat when the figure first scrolls into view
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+
+  function ramp(t: number, a: number, b: number) { return Math.min(1, Math.max(0, (t - a) / (b - a))); }
+  function ease(x: number) { return x * x * (3 - 2 * x); }
+</script>

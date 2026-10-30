@@ -1,0 +1,359 @@
+---
+// VoxelNet's main architecture (after Fig. 2 of the paper: feature learning network → convolutional middle layers → RPN).
+// One stage per row of the tensor-shape table in the article (same names and shapes), grouped like the paper's figure.
+---
+<canvas class="wt-canvas voxelnet-arch-canvas"
+  role="img" aria-label="VoxelNet stage by stage, one stage per row of the shape table: points grouped into voxels, two VFE layers and a max give one vector per voxel, scattered into a sparse 4D tensor; three 3D convolutions shrink the height, a reshape gives a bird's-eye-view map, and the region proposal network outputs score and regression maps"></canvas>
+
+<style>
+  canvas.wt-canvas.voxelnet-arch-canvas { height: 430px; }
+  @media (max-width: 600px) { canvas.wt-canvas.voxelnet-arch-canvas { height: 300px; } }
+</style>
+
+<script>
+  import { runPipeline, type PipeSpec } from '../../../lib/walkthroughFiguresAClient';
+
+  const SPEC: PipeSpec = {
+  "cols": 7,
+  "rows": 3,
+  "nodes": [
+    {
+      "id": "in",
+      "col": 0,
+      "row": 0,
+      "step": 0,
+      "kind": "points",
+      "label": "Input",
+      "sub": "~100k×4"
+    },
+    {
+      "id": "grp",
+      "col": 1,
+      "row": 0,
+      "step": 1,
+      "kind": "voxels",
+      "label": "Grouping",
+      "sub": "10×400×352"
+    },
+    {
+      "id": "pin",
+      "col": 2,
+      "row": 0,
+      "step": 2,
+      "kind": "vector",
+      "label": "Point input",
+      "sub": "K×35×7"
+    },
+    {
+      "id": "v1",
+      "col": 3,
+      "row": 0,
+      "step": 3,
+      "kind": [
+        "mlp",
+        "maxpool",
+        "concat"
+      ],
+      "label": "VFE-1(7, 32)",
+      "sub": "K×35×32",
+      "shared": true
+    },
+    {
+      "id": "v2",
+      "col": 4,
+      "row": 0,
+      "step": 4,
+      "kind": [
+        "mlp",
+        "maxpool",
+        "concat"
+      ],
+      "label": "VFE-2(32, 128)",
+      "sub": "K×35×128",
+      "shared": true
+    },
+    {
+      "id": "fcn",
+      "col": 5,
+      "row": 0,
+      "step": 5,
+      "kind": [
+        "mlp",
+        "maxpool"
+      ],
+      "label": "FCN + max",
+      "sub": "K×128",
+      "shared": true
+    },
+    {
+      "id": "sc",
+      "col": 6,
+      "row": 0,
+      "step": 6,
+      "kind": "voxels",
+      "label": "Scatter",
+      "sub": "128×10×400×352"
+    },
+    {
+      "id": "c1",
+      "col": 0,
+      "row": 1,
+      "step": 7,
+      "kind": "conv3d",
+      "label": "Conv3D(128, 64)",
+      "sub": "64×5×400×352"
+    },
+    {
+      "id": "c2",
+      "col": 1,
+      "row": 1,
+      "step": 8,
+      "kind": "conv3d",
+      "label": "Conv3D(64, 64)",
+      "sub": "64×3×400×352"
+    },
+    {
+      "id": "c3",
+      "col": 2,
+      "row": 1,
+      "step": 9,
+      "kind": "conv3d",
+      "label": "Conv3D(64, 64)",
+      "sub": "64×2×400×352"
+    },
+    {
+      "id": "rs",
+      "col": 3,
+      "row": 1,
+      "step": 10,
+      "kind": "map",
+      "label": "Reshape",
+      "sub": "128×400×352"
+    },
+    {
+      "id": "rpn",
+      "col": 0,
+      "row": 2,
+      "step": 11,
+      "kind": "rpn",
+      "label": "RPN",
+      "sub": "768×200×176"
+    },
+    {
+      "id": "hd",
+      "col": 1,
+      "row": 2,
+      "step": 12,
+      "kind": "conv2d",
+      "label": "Heads (1×1)"
+    },
+    {
+      "id": "mp",
+      "col": 2,
+      "row": 2,
+      "step": 12,
+      "kind": "map",
+      "label": "Score + regression",
+      "sub": "2|14×200×176"
+    },
+    {
+      "id": "out",
+      "col": 3,
+      "row": 2,
+      "step": 13,
+      "kind": "boxes",
+      "label": "3D boxes",
+      "sub": "after NMS"
+    }
+  ],
+  "edges": [
+    [
+      "in",
+      "grp"
+    ],
+    [
+      "grp",
+      "pin"
+    ],
+    [
+      "pin",
+      "v1"
+    ],
+    [
+      "v1",
+      "v2"
+    ],
+    [
+      "v2",
+      "fcn"
+    ],
+    [
+      "fcn",
+      "sc"
+    ],
+    [
+      "sc",
+      "c1"
+    ],
+    [
+      "c1",
+      "c2"
+    ],
+    [
+      "c2",
+      "c3"
+    ],
+    [
+      "c3",
+      "rs"
+    ],
+    [
+      "rs",
+      "rpn"
+    ],
+    [
+      "rpn",
+      "hd"
+    ],
+    [
+      "hd",
+      "mp"
+    ],
+    [
+      "mp",
+      "out"
+    ]
+  ],
+  "steps": [
+    {
+      "say": "Input: the raw LiDAR points in the camera view",
+      "short": "Input: raw points",
+      "row": "Input",
+      "shape": "~100k × 4 (x, y, z, r)"
+    },
+    {
+      "say": "Grouping: partition space into 0.4 × 0.2 × 0.2 m voxels",
+      "short": "Grouping into voxels",
+      "row": "Grouping",
+      "shape": "voxel grid 10 × 400 × 352"
+    },
+    {
+      "say": "Point input: ≤ T = 35 random points per voxel, plus centroid offsets",
+      "short": "Point input: ≤ 35 points, 7-D",
+      "row": "Point input",
+      "shape": "K × 35 × 7"
+    },
+    {
+      "say": "VFE-1: shared FCN per point, max over the voxel, concatenate",
+      "short": "VFE-1: FCN, max, concat",
+      "row": "VFE-1(7, 32)",
+      "shape": "K × 35 × 32"
+    },
+    {
+      "say": "VFE-2: the same again, so points exchange information twice",
+      "short": "VFE-2: FCN, max, concat",
+      "row": "VFE-2(32, 128)",
+      "shape": "K × 35 × 128"
+    },
+    {
+      "say": "FCN + max: one 128-D feature per non-empty voxel",
+      "short": "FCN + max: one vector per voxel",
+      "row": "FCN + max",
+      "shape": "K × 128"
+    },
+    {
+      "say": "Scatter: the K voxel features become a sparse 4D tensor",
+      "short": "Scatter → sparse 4D tensor",
+      "row": "Scatter",
+      "shape": "128 × 10 × 400 × 352"
+    },
+    {
+      "say": "Conv3D, stride 2 along z: depth 10 → 5",
+      "short": "Conv3D: depth 10 → 5",
+      "row": "Conv3D(128, 64, 3, (2,1,1), (1,1,1))",
+      "shape": "64 × 5 × 400 × 352"
+    },
+    {
+      "say": "Conv3D, no padding along z: depth 5 → 3",
+      "short": "Conv3D: depth 5 → 3",
+      "row": "Conv3D(64, 64, 3, (1,1,1), (0,1,1))",
+      "shape": "64 × 3 × 400 × 352"
+    },
+    {
+      "say": "Conv3D, stride 2 along z: depth 3 → 2",
+      "short": "Conv3D: depth 3 → 2",
+      "row": "Conv3D(64, 64, 3, (2,1,1), (1,1,1))",
+      "shape": "64 × 2 × 400 × 352"
+    },
+    {
+      "say": "Reshape: merge the height into channels → a BEV map",
+      "short": "Reshape → BEV map",
+      "row": "Reshape",
+      "shape": "128 × 400 × 352"
+    },
+    {
+      "say": "RPN: three conv blocks, each deconvolved and concatenated",
+      "short": "RPN: 3 blocks + deconv, concat",
+      "row": "RPN (3 blocks + deconv, concat)",
+      "shape": "768 × 200 × 176"
+    },
+    {
+      "say": "Heads: 1 × 1 convs give a score map and a regression map",
+      "short": "Heads: scores + regression",
+      "row": "Heads",
+      "shape": "scores 2 × 200 × 176 · regression 14 × 200 × 176"
+    },
+    {
+      "say": "Output: oriented 3D boxes from the positive anchors",
+      "short": "Output: 3D boxes",
+      "row": "Output (after the table)",
+      "shape": "(x, y, z, l, w, h, θ) per box, after NMS"
+    }
+  ],
+  "groups": [
+    {
+      "label": "Feature Learning Network",
+      "col0": 0,
+      "col1": 6,
+      "row0": 0,
+      "row1": 0,
+      "steps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ]
+    },
+    {
+      "label": "Convolutional Middle Layers",
+      "col0": 0,
+      "col1": 3,
+      "row0": 1,
+      "row1": 1,
+      "steps": [
+        7,
+        8,
+        9,
+        10
+      ]
+    },
+    {
+      "label": "Region Proposal Network",
+      "col0": 0,
+      "col1": 3,
+      "row0": 2,
+      "row1": 2,
+      "steps": [
+        11,
+        12,
+        13
+      ]
+    }
+  ]
+};
+
+  document.querySelectorAll<HTMLCanvasElement>('.voxelnet-arch-canvas').forEach((canvas) => runPipeline(canvas, SPEC));
+</script>

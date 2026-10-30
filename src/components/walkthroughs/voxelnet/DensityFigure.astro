@@ -1,0 +1,221 @@
+---
+// Highly variable density, on the real scan. Beat 1: the points in BEV with range rings. Beat 2: points per voxel
+// (VoxelNet's 0.2 × 0.2 × 0.4 m voxels, shown as the busiest voxel of each 1 m cell), with the busiest voxel of the
+// scan and a far one-point voxel picked out. Beat 3: mean points per non-empty voxel by distance.
+import { loadScene, every, cm } from '../../../lib/walkthroughFiguresA';
+
+const R = 40, CELL = 1, VX = 0.2, VZ = 0.4, Z0 = -1, Z1 = 3;
+const { points } = loadScene();
+const pts = points.filter((p) => Math.abs(p.x) < R && Math.abs(p.y) < R && p.z >= Z0 && p.z < Z1);
+// Voxel counts
+const vox = new Map<number, number>();
+const NV = (2 * R) / VX, NZ = (Z1 - Z0) / VZ;
+for (const p of pts) {
+  const key = (Math.floor((p.x + R) / VX) * NV + Math.floor((p.y + R) / VX)) * NZ + Math.floor((p.z - Z0) / VZ);
+  vox.set(key, (vox.get(key) ?? 0) + 1);
+}
+const NC = (2 * R) / CELL;
+const cellMax = new Array(NC * NC).fill(0);
+let busiest = { n: 0, x: 0, y: 0 }, lonely = { n: 0, x: 0, y: 0, r: 0 };
+const bands = [[5, 10], [10, 20], [20, 30], [30, 40]].map(([a, b]) => ({ a, b, n: 0, pts: 0 }));
+for (const [key, n] of vox) {
+  const iz = key % NZ, ixy = (key - iz) / NZ, iy = ixy % NV, ix = (ixy - iy) / NV;
+  const x = -R + (ix + 0.5) * VX, y = -R + (iy + 0.5) * VX, r = Math.hypot(x, y);
+  const c = Math.floor((x + R) / CELL) * NC + Math.floor((y + R) / CELL);
+  cellMax[c] = Math.max(cellMax[c], n);
+  if (n > busiest.n) busiest = { n, x, y };
+  if (n === 1 && r < R - 2 && r > lonely.r) lonely = { n, x, y, r };
+  const band = bands.find((b) => r >= b.a && r < b.b);
+  if (band) { band.n++; band.pts += n; }
+}
+const bev = every(pts, Math.max(1, Math.round(pts.length / 9000))).map((p) => [cm(p.x), cm(p.y)]);
+const data = {
+  r: R, nc: NC, cell: CELL, cellMax, bev,
+  busiest: { n: busiest.n, x: cm(busiest.x), y: cm(busiest.y) },
+  lonely: { x: cm(lonely.x), y: cm(lonely.y) },
+  bands: bands.map((b) => ({ a: b.a, b: b.b, mean: Math.round((b.pts / b.n) * 10) / 10 })),
+};
+---
+<canvas class="wt-canvas density-canvas" data-den={JSON.stringify(data)}
+  role="img" aria-label="The scan from above with range rings: voxels close to the sensor hold many points, distant voxels only one or two; the mean number of points per non-empty voxel falls steadily with distance"></canvas>
+
+<style>
+  canvas.wt-canvas.density-canvas { height: 400px; }
+  @media (max-width: 600px) { canvas.wt-canvas.density-canvas { height: 360px; } }
+</style>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  type Den = {
+    r: number; nc: number; cell: number; cellMax: number[]; bev: [number, number][];
+    busiest: { n: number; x: number; y: number }; lonely: { x: number; y: number };
+    bands: { a: number; b: number; mean: number }[];
+  };
+
+  document.querySelectorAll<HTMLCanvasElement>('.density-canvas').forEach((canvas) => {
+    const d: Den = JSON.parse(canvas.dataset.den!);
+    const ctx = canvas.getContext('2d')!;
+    const first = d.bands[0], last = d.bands[d.bands.length - 1];
+    const HEADLINE = [
+      'Close to the sensor the points are dense, far away they are sparse',
+      `Points per voxel: from ${d.busiest.n} in the busiest voxel down to a single point`,
+      `Mean points per voxel: ${first.mean} at ${first.a}–${first.b} m, only ${last.mean} at ${last.a}–${last.b} m`,
+    ];
+    const HEADLINE_SHORT = ['Dense near, sparse far', `Per voxel: ${d.busiest.n} points … 1 point`, `Mean per voxel: ${first.mean} → ${last.mean}`];
+    const vmax = Math.log(1 + d.busiest.n);
+    // Sequential scale: pale blue (one point) → purple → deep red (busiest voxel)
+    const heat = (f: number, dark: boolean) => `hsl(${210 + f * 150} ${65 + f * 20}% ${dark ? 35 + f * 25 : 80 - f * 35}%)`;
+
+    const T = { pts: 0, vox: 5.5, chart: 12, end: 19 };
+    const BEATS = [T.pts, T.vox, T.chart];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T.vox ? 0 : t < T.chart ? 1 : 2;
+      const narrow = W < 520;
+      const fadeAll = 1 - ramp(t, T.end - 0.5, T.end);
+      const vox = ease(ramp(t, T.vox + 0.3, T.vox + 1.8));
+      const chart = ease(ramp(t, T.chart + 0.3, T.chart + 1.8));
+
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+
+      // Map on the left, chart on the right (stacked below the map on narrow screens)
+      const top = 86, side = narrow ? 6 : 20;
+      const mapS = narrow ? Math.min(W * 0.56, H - top - 10) : Math.min(W * 0.5, H - top - 10);
+      const mx = side, my = top, sc = mapS / (2 * d.r);
+      const toXY = (x: number, y: number) => [mx + mapS / 2 - y * sc, my + mapS / 2 - x * sc] as const;
+
+      ctx.globalAlpha = fadeAll;
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(beat === 0 ? 'Scan from above' : 'Points per voxel', mx + mapS / 2, 46);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(beat === 0 ? `±${d.r} m around the car` : 'voxels 0.2 × 0.2 × 0.4 m', mx + mapS / 2, 62);
+
+      // Points fade out as the voxel counts come in
+      ctx.globalAlpha = fadeAll * (1 - 0.85 * vox);
+      ctx.fillStyle = dark ? '#8fb3ff' : '#1e3a8a';
+      for (const [x, y] of d.bev) { const [px, py] = toXY(x, y); ctx.fillRect(px - 0.5, py - 0.5, 1.2, 1.2); }
+      // Voxel counts (busiest voxel of each 1 m cell), log colour scale
+      if (vox > 0.01) {
+        const cs = d.cell * sc;
+        for (let i = 0; i < d.nc; i++) for (let j = 0; j < d.nc; j++) {
+          const n = d.cellMax[i * d.nc + j];
+          if (!n) continue;
+          const f = Math.log(1 + n) / vmax;
+          ctx.globalAlpha = fadeAll * vox;
+          ctx.fillStyle = heat(f, dark);
+          const [px, py] = toXY(-d.r + (i + 1) * d.cell, -d.r + (j + 1) * d.cell);
+          ctx.fillRect(px, py, cs + 0.3, cs + 0.3);
+        }
+      }
+      // Colour legend under the title
+      if (vox > 0.01) {
+        const lw = Math.min(140, mapS * 0.5), lx = mx + mapS / 2 - lw / 2, ly = 72;
+        ctx.globalAlpha = fadeAll * vox;
+        for (let k = 0; k < 40; k++) { ctx.fillStyle = heat(k / 39, dark); ctx.fillRect(lx + (k * lw) / 40, ly, lw / 40 + 0.5, 6); }
+        ctx.font = `500 ${narrow ? 8 : 10}px "IBM Plex Mono", monospace`;
+        ctx.fillStyle = text;
+        ctx.textAlign = 'right'; ctx.fillText('1', lx - 4, ly + 6);
+        ctx.textAlign = 'left'; ctx.fillText(`${d.busiest.n} pts`, lx + lw + 4, ly + 6);
+      }
+      // Range rings
+      ctx.globalAlpha = fadeAll * 0.8;
+      ctx.strokeStyle = faint; ctx.lineWidth = 0.8; ctx.setLineDash([3, 3]);
+      ctx.font = `500 ${narrow ? 8 : 10}px "IBM Plex Mono", monospace`;
+      ctx.fillStyle = text; ctx.textAlign = 'left';
+      const [cx, cy] = toXY(0, 0);
+      for (const r of [10, 20, 30]) {
+        ctx.beginPath(); ctx.arc(cx, cy, r * sc, 0, Math.PI * 2); ctx.stroke();
+        ctx.fillText(`${r} m`, cx - r * sc * 0.71 + 3, cy + r * sc * 0.71 + 10);
+      }
+      ctx.setLineDash([]);
+      // Call-outs: the busiest voxel and a far single-point voxel
+      if (vox > 0.01) {
+        ctx.globalAlpha = fadeAll * ease(ramp(t, T.vox + 1.6, T.vox + 2.6));
+        const callout = (x: number, y: number, label: string, dx: number) => {
+          const [px, py] = toXY(x, y);
+          ctx.strokeStyle = red; ctx.lineWidth = 1.6;
+          ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.stroke();
+          const lx = Math.min(mx + mapS - 4, Math.max(mx + 4, px + dx));
+          ctx.beginPath(); ctx.moveTo(px + Math.sign(dx) * 6, py); ctx.lineTo(lx, py); ctx.stroke();
+          ctx.fillStyle = red; ctx.textAlign = dx > 0 ? 'left' : 'right';
+          ctx.font = `600 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+          ctx.fillText(label, lx + (dx > 0 ? 3 : -3), py + 4);
+        };
+        const [bx] = toXY(d.busiest.x, d.busiest.y), [lx] = toXY(d.lonely.x, d.lonely.y);
+        callout(d.busiest.x, d.busiest.y, `${d.busiest.n} points`, bx < mx + mapS / 2 ? 40 : -40);
+        callout(d.lonely.x, d.lonely.y, '1 point', lx < mx + mapS / 2 ? 30 : -30);
+      }
+
+      // Chart: mean points per non-empty voxel by distance
+      if (chart > 0.01) {
+        const gx = mx + mapS + (narrow ? 10 : 44), gw = W - gx - side;
+        const gTop = top + 30, gBot = H - (narrow ? 40 : 34), gh = gBot - gTop;
+        const vMax = Math.max(...d.bands.map((b) => b.mean));
+        const bw = gw / d.bands.length;
+        ctx.globalAlpha = fadeAll * chart;
+        ctx.textAlign = 'center';
+        ctx.font = `600 ${narrow ? 11 : 13}px Sora, sans-serif`;
+        ctx.fillStyle = heading;
+        ctx.fillText(narrow ? 'Mean pts / voxel' : 'Mean points per voxel', gx + gw / 2, top + 6, gw);
+        d.bands.forEach((b, k) => {
+          const h = (gh * b.mean) / vMax * ease(ramp(t, T.chart + 0.5 + k * 0.4, T.chart + 1.5 + k * 0.4));
+          const x = gx + k * bw + bw * 0.18, w = bw * 0.64;
+          ctx.fillStyle = k === d.bands.length - 1 ? red : accent;
+          ctx.fillRect(x, gBot - h, w, h);
+          ctx.font = `600 ${narrow ? 10 : 12}px "IBM Plex Mono", monospace`;
+          ctx.fillStyle = heading;
+          ctx.fillText(String(b.mean), x + w / 2, gBot - h - 5);
+          ctx.font = `500 ${narrow ? 8 : 10}px "IBM Plex Mono", monospace`;
+          ctx.fillStyle = text;
+          ctx.fillText(`${b.a}–${b.b}`, x + w / 2, gBot + 13);
+        });
+        ctx.fillText('distance (m)', gx + gw / 2, gBot + (narrow ? 27 : 28));
+        ctx.strokeStyle = faint; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(gx, gBot); ctx.lineTo(gx + gw, gBot); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T.chart + 3); });
+    if (still) { frame(T.chart + 3); return; }
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>
