@@ -1,0 +1,3 @@
+I am a PhD researcher in the [PercInS](https://www.ce.cit.tum.de/pins/team/anh-hiep-hoang/) group at the [Munich Institute of Robotics and Machine Intelligence (MIRMI)](https://www.mirmi.tum.de/en/mirmi/), **Technical University of Munich (TUM)**, supervised by Prof. [Achim J. Lilienthal](https://scholar.google.com/citations?user=_CdZ5cgAAAAJ&hl=en) within the [MSCA ENGAGE](https://dn-engage.eu/doctoral-candidate/#:~:text=DC5,Anh%20Hiep%20Hoang) network. I work on 3D perception for autonomous driving and robotics: LiDAR-based 3D object detection, tracking and scene understanding.
+
+Open to collaborations — feel free to reach out.

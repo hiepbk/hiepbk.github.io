@@ -1,0 +1,94 @@
+---
+import '../styles/global.css';
+import { site, nav } from '../config';
+import Social from '../components/Social.astro';
+import VoxelName from '../components/VoxelName.astro';
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+const { title, description = site.description } = Astro.props;
+const fullTitle = title ? `${title} · ${site.name}` : site.name;
+const path = Astro.url.pathname;
+const isActive = (url: string) => (url === '/' ? path === '/' : path.startsWith(url));
+const now = new Date();
+const year = now.getFullYear();
+const updated = now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+---
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{fullTitle}</title>
+  <meta name="description" content={description}>
+  <link rel="canonical" href={new URL(path, Astro.site)}>
+  <meta property="og:title" content={fullTitle}>
+  <meta property="og:description" content={description}>
+  <meta property="og:image" content={new URL(site.avatar, Astro.site)}>
+  <link rel="icon" href="/favicon.png">
+  <link rel="sitemap" href="/sitemap-index.xml">
+  <script is:inline>
+    try {
+      const t = localStorage.getItem('theme');
+      if (t) document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body>
+  <header class="nav">
+    <div class="container nav-inner">
+      <a class="brand" href="/" aria-label={site.name}><VoxelName /></a>
+      <nav class="nav-links" aria-label="Main">
+        {nav.map((item) => (
+          <a href={item.url} class:list={{ active: isActive(item.url) }} aria-current={isActive(item.url) ? 'page' : undefined}>{item.title}</a>
+        ))}
+        <button class="theme-toggle" type="button" aria-label="Toggle dark mode">
+          <i class="fa-solid fa-moon"></i><i class="fa-solid fa-sun"></i>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <slot />
+  </main>
+
+  <footer class="footer">
+    <div class="container footer-grid">
+      <div>
+        <p class="footer-name">{site.name}</p>
+        <p>PhD Researcher · PercInS, Technical University of Munich</p>
+        <p><a href={`mailto:${site.email}`}>{site.email}</a></p>
+      </div>
+      <nav class="footer-links" aria-label="Footer">
+        {nav.map((item) => <a href={item.url}>{item.title}</a>)}
+      </nav>
+      <div class="footer-right">
+        <Social />
+      </div>
+    </div>
+    <div class="container footer-bottom">
+      <span>© {year} {site.name}. All rights reserved.</span>
+      <span>Home-page LiDAR scan from <a href="https://pandaset.org" target="_blank" rel="noopener">PandaSet</a> by Hesai &amp; Scale AI, <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>, cropped and recoloured.</span>
+      <span>Last updated {updated}</span>
+    </div>
+  </footer>
+
+  <script>
+    document.querySelector('.theme-toggle')?.addEventListener('click', () => {
+      const root = document.documentElement;
+      const current = root.getAttribute('data-theme') ??
+        (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      const next = current === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem('theme', next); } catch (e) {}
+    });
+  </script>
+</body>
+</html>

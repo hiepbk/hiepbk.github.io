@@ -1,0 +1,70 @@
+---
+import { getCollection } from 'astro:content';
+import Base from '../layouts/Base.astro';
+import Social from '../components/Social.astro';
+import VoxelHero from '../components/VoxelHero.astro';
+import Publication from '../components/Publication.astro';
+import ProjectCard from '../components/ProjectCard.astro';
+import { Content as About } from '../data/about.md';
+import { site } from '../config';
+
+const pubs = (await getCollection('publications'))
+  .filter((p) => p.data.selected)
+  .sort((a, b) => a.data.selected! - b.data.selected!);
+const projects = (await getCollection('projects'))
+  .filter((p) => p.data.featured)
+  .sort((a, b) => a.data.order - b.data.order);
+const experience = (await getCollection('experience')).sort((a, b) => parseInt(a.id) - parseInt(b.id));
+---
+<Base>
+  <div class="home">
+    <aside class="profile">
+      <img class="avatar" src={site.avatar} alt={site.name} />
+      <h1>{site.name}</h1>
+      <ul class="facts">
+        {site.facts.map((f) => (
+          <li><i class={`fa-solid ${f.icon}`}></i>{f.url ? <a href={f.url} target="_blank" rel="noopener">{f.text}</a> : f.text}</li>
+        ))}
+      </ul>
+      <div class="bio"><About /></div>
+      <Social />
+      <a class="email" href={`mailto:${site.email}`}><i class="fa-regular fa-envelope"></i> {site.email}</a>
+    </aside>
+
+    <div class="home-main">
+      <VoxelHero />
+
+      <section class="section">
+        <h2 class="section-title"><i class="fa-solid fa-file-lines"></i>Selected Publications</h2>
+        <div class="pub-list">
+          {pubs.map((p) => <Publication pub={p.data} />)}
+        </div>
+        <p class="more"><a href="/publications/">Show all publications →</a></p>
+      </section>
+
+      <section class="section">
+        <h2 class="section-title"><i class="fa-solid fa-cube"></i>Projects</h2>
+        <div class="grid">
+          {projects.map((p) => <ProjectCard project={p} />)}
+        </div>
+        <p class="more"><a href="/projects/">Show all projects →</a></p>
+      </section>
+
+      <section class="section">
+        <h2 class="section-title"><i class="fa-solid fa-briefcase"></i>Experience &amp; Education</h2>
+        <ol class="timeline">
+          {experience.map(({ data: e }) => (
+            <li>
+              <span class="when">{e.period}</span>
+              <div>
+                <h3>{e.role}</h3>
+                <p class="org">{e.org_url ? <a href={e.org_url} target="_blank" rel="noopener">{e.org}</a> : e.org}</p>
+                <p class="detail">{e.location}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </section>
+    </div>
+  </div>
+</Base>

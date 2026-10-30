@@ -1,0 +1,14 @@
+---
+import { site } from '../config';
+
+const links = [
+  { id: 'scholar', label: 'Scholar', icon: 'fa-google-scholar', url: site.social.scholar, aria: 'Google Scholar' },
+  { id: 'github', label: 'GitHub', icon: 'fa-github', url: site.social.github, aria: 'GitHub' },
+  { id: 'linkedin', label: 'LinkedIn', icon: 'fa-linkedin-in', url: site.social.linkedin, aria: 'LinkedIn' },
+];
+---
+<div class="social">
+  {links.map((l) => (
+    <a class={`s-${l.id}`} href={l.url} target="_blank" rel="noopener" aria-label={l.aria}><i class={`fa-brands ${l.icon}`}></i><span>{l.label}</span></a>
+  ))}
+</div>

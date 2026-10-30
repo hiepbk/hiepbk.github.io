@@ -1,0 +1,35 @@
+# Timeline on the home page, ordered by the number at the start of `id`. Leave `period` out if unknown.
+# Each entry shows: role / institution (with lab) / location.
+
+- id: 1-tum-phd
+  role: PhD Researcher
+  org: PercInS, Technical University of Munich (TUM)
+  org_url: https://www.ce.cit.tum.de/pins/team/anh-hiep-hoang/
+  location: Munich, Germany
+  period: 2026 – Present
+
+- id: 2-deltax
+  role: AI Researcher
+  org: DeltaX
+  org_url: http://deltax.ai/renewal/eng/
+  location: Seoul, South Korea
+  period: 2024 – 2026
+
+- id: 3-soongsil-ms
+  role: M.S. in Information Communication Convergence Technology
+  org: ANDA Lab, Soongsil University (SSU)
+  location: Seoul, South Korea
+  period: 2022 – 2024
+
+- id: 4-usc-intern
+  role: Remote Research Intern (Robotics)
+  org: Dynamic Robotics and Control Lab, University of Southern California (USC)
+  org_url: https://sites.usc.edu/quann/
+  location: Los Angeles, USA (remote)
+  period: 2020 – 2021
+
+- id: 5-hust-be
+  role: B.E. in Control Engineering and Automation
+  org: Hanoi University of Science and Technology (HUST)
+  location: Hanoi, Vietnam
+  period: 2015 – 2020

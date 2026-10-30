@@ -1,0 +1,24 @@
+---
+import { getCollection } from 'astro:content';
+import Base from '../layouts/Base.astro';
+import Publication from '../components/Publication.astro';
+import { site } from '../config';
+
+const pubs = await getCollection('publications');
+const years = [...new Set(pubs.map((p) => p.data.year))].sort((a, b) => b - a);
+---
+<Base title="Publications" description="Publications on 3D object detection, multi-object tracking and robotics.">
+  <header class="page-header">
+    <h1>Publications</h1>
+    <p class="lead">See also my <a href={site.social.scholar} target="_blank" rel="noopener">Google Scholar</a> profile.</p>
+  </header>
+
+  {years.map((year) => (
+    <section class="year-group">
+      <h2 class="year">{year}</h2>
+      <div class="pub-list">
+        {pubs.filter((p) => p.data.year === year).map((p) => <Publication pub={p.data} />)}
+      </div>
+    </section>
+  ))}
+</Base>

@@ -1,0 +1,242 @@
+---
+// The site name as a voxel sculpture: each word (ANH / HIEP / HOANG) is built from cubes, three voxels
+// thick, on one face of a triangular prism. Voxels fly in and converge into the letters, then the camera
+// orbits the prism (drag to turn it). Each voxel carries an occupancy probability that sets its shade and
+// is printed on its front face; words facing away fade out. An SVG of the flat name is the no-WebGL fallback.
+import { layoutText, voxelColor, ROWS } from '../lib/voxelFont';
+
+interface Props { text?: string }
+const { text = 'ANH HIEP HOANG' } = Astro.props;
+
+const S = 10, D = 5;
+const { cells, cols } = layoutText(text);
+const filled = new Set(cells.map((c) => `${c.x},${c.y}`));
+const rgb = (c: number[], k: number) => `rgb(${c.map((v) => Math.round(Math.min(255, v * k))).join(',')})`;
+const W = cols * S + D + 2, H = ROWS * S + D + 4;
+const sides: string[] = [], fronts: string[] = [];
+for (const { x, y } of cells) {
+  const px = x * S + 1, py = y * S + D + 1, c = voxelColor(x, y, cols);
+  if (!filled.has(`${x},${y - 1}`)) sides.push(`<path d="M${px} ${py}l${D} ${-D}h${S}l${-D} ${D}z" fill="${rgb(c, 1.45)}"/>`);
+  if (!filled.has(`${x + 1},${y}`)) sides.push(`<path d="M${px + S} ${py}l${D} ${-D}v${S}l${-D} ${D}z" fill="${rgb(c, 0.6)}"/>`);
+  fronts.push(`<rect x="${px}" y="${py}" width="${S}" height="${S}" fill="${rgb(c, 1)}"/>`);
+}
+---
+<span class="voxel-logo" data-text={text}>
+  <svg class="voxel-name" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={text} shape-rendering="crispEdges">
+    <Fragment set:html={sides.join('') + fronts.join('')} />
+  </svg>
+  <canvas class="voxel-logo-3d" aria-hidden="true"></canvas>
+</span>
+
+<script>
+  import { layoutText, ROWS } from '../lib/voxelFont';
+
+  const host = document.querySelector<HTMLElement>('.voxel-logo');
+  const canvas = host?.querySelector<HTMLCanvasElement>('.voxel-logo-3d');
+  if (host && canvas) start(host, canvas);
+
+  async function start(host: HTMLElement, canvas: HTMLCanvasElement) {
+    const THREE = await import('three');
+    let renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    } catch {
+      return; // keep the SVG
+    }
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setClearColor(0x000000, 0);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
+
+    const words = (host.dataset.text ?? '').split(' ');
+    const DEPTH = 3; // voxels per letter stroke, front to back
+    const WORD_COLORS: [number[], number[]][] = [
+      [[30, 58, 138], [47, 91, 234]],   // ANH: navy → blue
+      [[109, 40, 217], [168, 85, 247]], // HIEP: purple
+      [[13, 148, 136], [34, 197, 194]], // HOANG: teal
+    ];
+    const widest = Math.max(...words.map((w) => layoutText(w).cols));
+    const R = (widest + 3) / (2 * Math.sqrt(3)); // prism apothem: each face fits the widest word
+    const hash = (a: number, b: number) => ((((Math.sin(a * 12.9898 + b * 78.233) * 43758.5453) % 1) + 1) % 1);
+
+    // ---- Voxels: one face of the prism per word, at 0°, 120°, 240° ----
+    type Voxel = { p: InstanceType<typeof THREE.Vector3>; from: InstanceType<typeof THREE.Vector3>; prob: number; delay: number };
+    const faces = words.map((word, k) => {
+      const a = (k * 2 * Math.PI) / words.length;
+      const n = new THREE.Vector3(Math.sin(a), 0, Math.cos(a));  // outward normal
+      const t = new THREE.Vector3(Math.cos(a), 0, -Math.sin(a)); // reading direction
+      const { cells, cols } = layoutText(word);
+      const [from, to] = WORD_COLORS[k % WORD_COLORS.length];
+      const voxels: (Voxel & { color: number[]; front: boolean })[] = [];
+      for (const { x, y } of cells) {
+        for (let d = 0; d < DEPTH; d++) {
+          const p = new THREE.Vector3().addScaledVector(t, x - cols / 2 + 0.5).addScaledVector(n, R - 0.5 - d);
+          p.y = ROWS - y - 0.5;
+          const prob = 0.6 + 0.39 * hash(x + k * 31, y + d * 7);
+          const f = cols > 1 ? x / (cols - 1) : 0;
+          const shade = (1.08 - d * 0.16) * (0.7 + 0.3 * prob);
+          // Start somewhere around the prism and converge
+          const r = 14 + 20 * hash(x * 3 + d, y + k * 5), th = 6.283 * hash(y + d, x + k), ph = Math.PI * hash(x + k, y * 2 + d);
+          const start = new THREE.Vector3(r * Math.sin(ph) * Math.cos(th), ROWS / 2 + r * Math.cos(ph) * 0.6, r * Math.sin(ph) * Math.sin(th));
+          voxels.push({
+            p, from: start, prob, delay: 0.9 * hash(x + d * 3, y + k), front: d === 0,
+            color: from.map((v, i) => Math.min(255, (v + (to[i] - v) * f) * shade)),
+          });
+        }
+      }
+      return { a, n, voxels };
+    });
+
+    // ---- Probability labels: a texture atlas of ".60" … ".99", sampled per instance ----
+    const atlas = document.createElement('canvas');
+    const CELL = 64, GRID = 8; // 64 entries: probabilities 0.60 + i/100 for i in 0..39 (rest unused)
+    atlas.width = atlas.height = CELL * GRID;
+    const actx = atlas.getContext('2d')!;
+    actx.fillStyle = '#fff';
+    actx.font = `600 ${CELL * 0.42}px "IBM Plex Mono", monospace`;
+    actx.textAlign = 'center';
+    actx.textBaseline = 'middle';
+    for (let i = 0; i < 40; i++) {
+      actx.fillText(`.${60 + i}`, (i % GRID + 0.5) * CELL, (Math.floor(i / GRID) + 0.5) * CELL);
+    }
+    const atlasTex = new THREE.CanvasTexture(atlas);
+    atlasTex.anisotropy = 4;
+    const labelMat = (opacity: { value: number }) => new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      uniforms: { map: { value: atlasTex }, opacity },
+      vertexShader: `
+        attribute float cellIndex;
+        varying vec2 vUv;
+        void main() {
+          float cx = mod(cellIndex, ${GRID}.0), cy = floor(cellIndex / ${GRID}.0);
+          vUv = (vec2(cx, ${GRID - 1}.0 - cy) + uv) / ${GRID}.0;
+          gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: `
+        uniform sampler2D map; uniform float opacity; varying vec2 vUv;
+        void main() { vec4 c = texture2D(map, vUv); gl_FragColor = vec4(c.rgb, c.a * opacity); }`,
+    });
+
+    // ---- Meshes (one set per word, so words turned away can fade) ----
+    const scene = new THREE.Scene();
+    const cube = new THREE.BoxGeometry(0.9, 0.9, 0.9);
+    const plane = new THREE.PlaneGeometry(0.86, 0.86);
+    const m = new THREE.Matrix4(), sc = new THREE.Vector3(1, 1, 1), c = new THREE.Color();
+    const pos = new THREE.Vector3();
+
+    // Fly-in runs on the GPU: each instance stores its start offset and delay; the vertex shader blends
+    // from the scattered position to the letter with one shared time uniform (also used for the shadow).
+    const uT = { value: 0 };
+    const flyIn = (shader: { uniforms: Record<string, unknown>; vertexShader: string }) => {
+      shader.uniforms.uT = uT;
+      shader.vertexShader = 'attribute vec3 aOffset;\nattribute float aDelay;\nuniform float uT;\n' +
+        shader.vertexShader.replace('#include <begin_vertex>', `
+          float k = clamp((uT - aDelay) / 1.7, 0.0, 1.0);
+          k = 1.0 - pow(1.0 - k, 3.0);
+          vec3 transformed = position * (0.3 + 0.7 * k) + aOffset * (1.0 - k);`);
+    };
+    const depthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+    depthMat.onBeforeCompile = flyIn;
+
+    const meshes = faces.map(({ a, n, voxels }) => {
+      const mat = new THREE.MeshStandardMaterial({ roughness: 0.42, metalness: 0.05, transparent: true });
+      mat.onBeforeCompile = flyIn;
+      const geo = cube.clone();
+      geo.setAttribute('aOffset', new THREE.InstancedBufferAttribute(
+        Float32Array.from(voxels.flatMap((v) => [v.from.x - v.p.x, v.from.y - v.p.y, v.from.z - v.p.z])), 3));
+      geo.setAttribute('aDelay', new THREE.InstancedBufferAttribute(Float32Array.from(voxels, (v) => v.delay), 1));
+      const mesh = new THREE.InstancedMesh(geo, mat, voxels.length);
+      mesh.customDepthMaterial = depthMat;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      voxels.forEach((v, i) => {
+        mesh.setMatrixAt(i, m.makeTranslation(v.p.x, v.p.y, v.p.z));
+        mesh.setColorAt(i, c.setRGB(v.color[0] / 255, v.color[1] / 255, v.color[2] / 255, THREE.SRGBColorSpace));
+      });
+      scene.add(mesh);
+
+      const fronts = voxels.filter((v) => v.front);
+      const labelOpacity = { value: 0 };
+      const labels = new THREE.InstancedMesh(plane, labelMat(labelOpacity), fronts.length);
+      labels.geometry = plane.clone();
+      labels.geometry.setAttribute('cellIndex', new THREE.InstancedBufferAttribute(
+        Float32Array.from(fronts, (v) => Math.min(39, Math.round((v.prob - 0.6) * 100))), 1));
+      const rot = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), a);
+      fronts.forEach((v, i) => labels.setMatrixAt(i, m.compose(pos.copy(v.p).addScaledVector(n, 0.46), rot, sc)));
+      scene.add(labels);
+      return { n, mat, labelOpacity };
+    });
+
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(R * 3, 48), new THREE.ShadowMaterial({ opacity: 0.2 }));
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x8899bb, 1.5));
+    const sun = new THREE.DirectionalLight(0xffffff, 2.4);
+    sun.position.set(R * 1.5, 26, R * 2.5);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(1024, 1024);
+    Object.assign(sun.shadow.camera, { left: -R * 2.5, right: R * 2.5, top: R * 2.5, bottom: -R * 2.5, near: 1, far: 120 });
+    sun.shadow.bias = -0.002;
+    sun.shadow.normalBias = 0.03;
+    scene.add(sun);
+
+    // ---- Camera: orthographic, orbiting continuously, slowing a little as each word faces it ----
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 400);
+    const VIEW_H = ROWS + 4.5;
+    const resize = () => {
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      renderer.setSize(w, h, false);
+      const halfW = (VIEW_H * (w / h)) / 2;
+      Object.assign(camera, { left: -halfW, right: halfW, top: VIEW_H / 2, bottom: -VIEW_H / 2 });
+      camera.updateProjectionMatrix();
+    };
+
+    let drag = 0, dragging = false, lastX = 0, moved = 0;
+    canvas.addEventListener('pointerdown', (e) => { dragging = true; moved = 0; lastX = e.clientX; canvas.setPointerCapture(e.pointerId); });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      drag -= (e.clientX - lastX) * 0.015;
+      moved += Math.abs(e.clientX - lastX);
+      lastX = e.clientX;
+    });
+    const release = () => { dragging = false; };
+    canvas.addEventListener('pointerup', release);
+    canvas.addEventListener('pointercancel', release);
+    // A plain click still follows the home link; a drag does not
+    host.parentElement?.addEventListener('click', (e) => { if (moved > 4) e.preventDefault(); });
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let assembleStart = still ? -100 : 0; // seconds; voxels converge over ~2.6 s from here
+    let clock = 0;
+    canvas.addEventListener('pointerenter', () => { if (!still && clock - assembleStart > 3.5) assembleStart = clock; });
+
+    const ease = (x: number) => 1 - Math.pow(1 - Math.min(1, Math.max(0, x)), 3);
+    const target = new THREE.Vector3(0, ROWS / 2 + 0.6, 0);
+    const frame = (ms: number) => {
+      clock = ms / 1000;
+      const theta = still ? 0.35 : clock * 0.55;
+      const a = theta - Math.sin(words.length * theta) / (words.length * 1.25) + drag;
+      if (!dragging) drag *= 0.97;
+      camera.position.set(Math.sin(a) * 60, 22, Math.cos(a) * 60);
+      camera.lookAt(target);
+
+      const tA = clock - assembleStart;
+      uT.value = tA;
+      for (const f of meshes) {
+        const facing = f.n.x * Math.sin(a) + f.n.z * Math.cos(a); // 1 = facing the camera
+        const vis = Math.min(1, Math.max(0, (facing + 0.1) / 0.7));
+        f.mat.opacity = 0.12 + 0.88 * vis;
+        f.labelOpacity.value = 0.85 * vis * vis * ease((tA - 2.4) / 0.8);
+      }
+      renderer.render(scene, camera);
+      requestAnimationFrame(frame);
+    };
+    resize();
+    window.addEventListener('resize', resize);
+    host.classList.add('is-3d');
+    requestAnimationFrame(frame);
+  }
+</script>

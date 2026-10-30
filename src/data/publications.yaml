@@ -1,0 +1,86 @@
+# Rendered on /publications/ (grouped by year). `selected: <n>` also shows it on the home page, in order n = 1, 2, ...
+# `id` must be unique. Titles and author lists follow the publisher's record (Crossref / DBpia).
+# The site owner's name ("Hiep Anh Hoang" or "Anh Hiep Hoang") is highlighted automatically.
+
+- id: tsstdet
+  title: "TSSTDet: Transformation-Based 3-D Object Detection via a Spatial Shape Transformer"
+  authors: Hiep Anh Hoang, Duy Cuong Bui, Myungsik Yoo
+  venue: IEEE Sensors Journal
+  venue_short: IEEE Sensors Journal
+  year: 2024
+  selected: 1
+  image: /images/TSSTDET_abstract.png
+  links:
+    - name: Paper
+      url: https://doi.org/10.1109/JSEN.2024.3350770
+
+- id: afmtrack
+  title: "AFMtrack: Attention-Based Feature Matching for Multiple Object Tracking"
+  authors: Duy Cuong Bui, Hiep Anh Hoang, Myungsik Yoo
+  venue: IEEE Access
+  venue_short: IEEE Access
+  year: 2024
+  image: /images/pubs/afmtrack.png  # Fig. 1 of the paper
+  links:
+    - name: Paper
+      url: https://doi.org/10.1109/ACCESS.2024.3411617
+
+- id: camtrack
+  title: "CAMTrack: A Combined Appearance-Motion Method for Multiple-Object Tracking"
+  authors: Duy Cuong Bui, Ngan Linh Nguyen, Anh Hiep Hoang, Myungsik Yoo
+  venue: Machine Vision and Applications
+  venue_short: Machine Vision and Applications
+  year: 2024
+  selected: 3
+  image: /images/pubs/camtrack.png  # Fig. 1 of the paper
+  links:
+    - name: Paper
+      url: https://doi.org/10.1007/s00138-024-01548-w
+
+- id: essdet
+  title: "ESSDet: Enhancing Spatial Shape for 3-D Object Detection"
+  authors: Hiep Anh Hoang, Myungsik Yoo
+  venue: International Conference on Information Networking (ICOIN)
+  venue_short: ICOIN 2024
+  year: 2024
+  image: /images/ESSDET_model.png
+  links:
+    - name: Paper
+      url: https://doi.org/10.1109/ICOIN59985.2024.10572166
+
+- id: 3onet
+  title: "3ONet: 3-D Detector for Occluded Object Under Obstructed Conditions"
+  authors: Hiep Anh Hoang, Myungsik Yoo
+  venue: IEEE Sensors Journal
+  venue_short: IEEE Sensors Journal
+  year: 2023
+  selected: 2
+  image: /images/3ONet_abstract.png
+  links:
+    - name: Paper
+      url: https://doi.org/10.1109/JSEN.2023.3293515
+
+- id: shape-aware-kics
+  title: "Shape Aware for 3D Object Detection using LiDAR Point Cloud"
+  authors: Hiep Anh Hoang, Myungsik Yoo
+  venue: KICS Summer Conference (한국통신학회 하계종합학술발표회)
+  venue_short: KICS 2023
+  year: 2023
+  # TODO: no thumbnail yet — DBpia does not expose the paper's figures; add one from the PDF.
+  links:
+    - name: Paper
+      url: https://www.dbpia.co.kr/Journal/articleDetail?nodeId=NODE11487913
+
+- id: quadruped-jumping-iros
+  title: "Contact-timing and Trajectory Optimization for 3D Jumping on Quadruped Robots"
+  authors: Chuong Nguyen, Quan Nguyen
+  venue: IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)
+  venue_short: IROS 2022
+  year: 2022
+  image: /images/pubs/quadruped-jumping-iros.png  # Fig. 2 of the paper
+  note: "Acknowledged contribution — I assisted with simulation and hardware experiments during my internship at the Dynamic Robotics and Control Lab (USC)."
+  links:
+    - name: Paper
+      url: https://doi.org/10.1109/IROS47612.2022.9981284
+    - name: arXiv
+      url: https://arxiv.org/abs/2110.06764

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.astro/
+.DS_Store
+
+# Reference material kept locally only (old template files, unused drafts); not published
+reference/

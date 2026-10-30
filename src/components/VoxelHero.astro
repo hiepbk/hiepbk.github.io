@@ -1,0 +1,465 @@
+---
+// Home-page hero: the common voxel-based 3D detection pipeline
+// (VoxelNet / SECOND / CenterPoint / Voxel R-CNN style), animated with three.js
+// on a real LiDAR frame exported by scripts/export_pandaset_scene.py (surround view) or
+// scripts/export_kitti_scene.py. For KITTI, which labels objects only inside the front camera's field of
+// view, the FOV is drawn and only points inside it are voxelized.
+---
+<figure class="hero-viz" aria-label="Animation of a voxel-based LiDAR 3D object detection pipeline on a real LiDAR scan">
+  <div class="viz-stage">
+    <canvas id="voxel-hero"></canvas>
+    <div class="viz-annot" hidden></div>
+    <div class="viz-hud" aria-hidden="true">
+      <div class="viz-hud-title"><span class="viz-idx">01</span><span class="viz-name">Point cloud</span></div>
+      <div class="viz-progress">{Array.from({ length: 6 }, () => <span><i></i></span>)}</div>
+    </div>
+  </div>
+</figure>
+
+<script>
+  import type * as T3 from 'three';
+
+  type Vec3 = [number, number, number];
+  interface Box {
+    center: Vec3;
+    size: Vec3; // [width (x), length (y), height] at yaw 0
+    yaw: number;
+    label: string;
+    kind: 0 | 1; // 0 = vehicle, 1 = person / rider
+  }
+
+  const SCENE = '/data/pandaset-044-14';
+  const STEPS = ['Point cloud', 'Voxelization', 'Sparse 3D conv', 'BEV compression', 'Detection head', '3D boxes'];
+  const EGO: Box = { center: [0, 0, 0.75], size: [1.9, 4.6, 1.5], yaw: 0, label: 'ego', kind: 0 };
+
+  const canvas = document.getElementById('voxel-hero') as HTMLCanvasElement | null;
+  if (canvas) start(canvas);
+
+  async function start(canvas: HTMLCanvasElement) {
+    const [THREE, buf, meta] = await Promise.all([
+      import('three'),
+      fetch(`${SCENE}.bin`).then((r) => r.arrayBuffer()),
+      fetch(`${SCENE}.json`).then((r) => r.json() as Promise<{ count: number; halfFov?: number; grid: { min: number[]; size: number[] }; boxes: Box[] }>),
+    ]);
+    let renderer: T3.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    } catch {
+      return; // no WebGL
+    }
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setClearColor(0x000000, 0);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(30, 2, 0.1, 500);
+    camera.up.set(0, 0, 1);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.7);
+    sun.position.set(25, -10, 40);
+    scene.add(sun);
+
+    // ---- Theme palettes (canvas is transparent; colours follow the page theme) ----
+    const C = (h: string) => new THREE.Color(h);
+    const PALETTES = {
+      light: {
+        bg: C('#fbfbf9'), active: C('#e5484d'), idle: C('#e6e8eb'), feature: C('#9aa6b5'),
+        heatLo: C('#f5a524'), heatHi: C('#e5484d'), box: [C('#0b8f8a'), C('#d9730d')], grid: C('#0b8f8a'),
+        ego: C('#8c929c'), kernel: C('#16181d'), stops: ['#0f766e', '#1d4ed8', '#6d28d9', '#c2410c'].map(C),
+      },
+      dark: {
+        bg: C('#0b0e13'), active: C('#ff5d4f'), idle: C('#1a212b'), feature: C('#4a5668'),
+        heatLo: C('#f5a524'), heatHi: C('#ff5d4f'), box: [C('#35d0c4'), C('#ffb86b')], grid: C('#35d0c4'),
+        ego: C('#a1a8b3'), kernel: C('#ffffff'), stops: ['#35d0c4', '#5b8cff', '#b07cff', '#ffb86b'].map(C),
+      },
+    };
+    const root = document.documentElement;
+    const darkQuery = matchMedia('(prefers-color-scheme: dark)');
+    const isDark = () => (root.getAttribute('data-theme') ?? (darkQuery.matches ? 'dark' : 'light')) === 'dark';
+
+    // ---- Point cloud (int16 xyz in cm, then a uint8 flag per point: bit 0 ground, bit 1 inside the labelled area) ----
+    const count = meta.count;
+    const raw = new Int16Array(buf, 0, count * 3);
+    const flags = new Uint8Array(buf, count * 6, count);
+    const pos = Float32Array.from(raw, (c) => c / 100);
+    const rangeT = new Float32Array(count);
+    for (let i = 0; i < count; i++) rangeT[i] = Math.min(Math.hypot(pos[3 * i], pos[3 * i + 1]) / 45, 0.999) * 3;
+    const baseColor = (stops: T3.Color[], i: number, out: T3.Color) => {
+      const k = Math.floor(rangeT[i]);
+      return out.copy(stops[k]).lerp(stops[k + 1], rangeT[i] - k);
+    };
+
+    // Round point sprite
+    const dot = document.createElement('canvas');
+    dot.width = dot.height = 64;
+    const dctx = dot.getContext('2d')!;
+    dctx.beginPath(); dctx.arc(32, 32, 30, 0, Math.PI * 2); dctx.fillStyle = '#fff'; dctx.fill();
+    const pointColors = new Float32Array(count * 3);
+    const pointGeo = new THREE.BufferGeometry();
+    pointGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    pointGeo.setAttribute('color', new THREE.BufferAttribute(pointColors, 3));
+    scene.add(new THREE.Points(pointGeo, new THREE.PointsMaterial({
+      size: 0.15, map: new THREE.CanvasTexture(dot), alphaTest: 0.5, vertexColors: true, sizeAttenuation: true,
+    })));
+
+    // ---- Voxel grid (fine) ----
+    const VOX = 0.4;
+    const MIN = meta.grid.min;
+    const N = meta.grid.size.map((s) => Math.round(s / VOX)); // even counts, for the stride-2 conv
+    const inside = new Uint8Array(count);
+    const fineMap = new Map<string, number[]>();
+    for (let i = 0; i < count; i++) {
+      const ix = Math.floor((pos[3 * i] - MIN[0]) / VOX);
+      const iy = Math.floor((pos[3 * i + 1] - MIN[1]) / VOX);
+      const iz = Math.floor((pos[3 * i + 2] - MIN[2]) / VOX);
+      // Ground points and points outside the labelled area (KITTI: camera FOV) are removed before voxelization
+      if (flags[i] !== 2 || ix < 0 || ix >= N[0] || iy < 0 || iy >= N[1] || iz < 0 || iz >= N[2]) continue;
+      inside[i] = 1;
+      fineMap.set(`${ix},${iy},${iz}`, [ix, iy, iz]);
+    }
+    const fine = [...fineMap.values()];
+    // Labelled objects inside the detection range
+    const objects = meta.boxes.filter((o) =>
+      o.center[0] > MIN[0] && o.center[0] < MIN[0] + N[0] * VOX && o.center[1] > MIN[1] && o.center[1] < MIN[1] + N[1] * VOX);
+
+    // Sparse conv output: stride 2 → coarse voxels, visited in raster order
+    const CV = VOX * 2;
+    const NZ = N[2] / 2;
+    const coarseKeys = [...new Set(fine.map(([x, y, z]) => `${x >> 1},${y >> 1},${z >> 1}`))];
+    const coarse = coarseKeys.map((k) => k.split(',').map(Number)).sort((a, b) => a[1] - b[1] || a[0] - b[0] || a[2] - b[2]);
+    const coarseIndex = new Map(coarse.map((c, i) => [c.join(','), i]));
+    const fineParent = fine.map(([x, y, z]) => coarseIndex.get(`${x >> 1},${y >> 1},${z >> 1}`)!);
+
+    // BEV map: one tile per coarse column; heatmap of object centers
+    const BX = N[0] / 2, BY = N[1] / 2, NT = BX * BY;
+    const feat = new Float32Array(NT);
+    for (const [cx, cy] of coarse) feat[cy * BX + cx] = Math.min(1, feat[cy * BX + cx] + 0.5);
+    const heat = new Float32Array(NT);
+    for (let ty = 0; ty < BY; ty++) for (let tx = 0; tx < BX; tx++) {
+      const x = MIN[0] + (tx + 0.5) * CV, y = MIN[1] + (ty + 0.5) * CV;
+      let h = 0;
+      for (const o of objects) {
+        const sigma = Math.max(0.55, 0.32 * Math.sqrt(o.size[0] * o.size[1]));
+        h = Math.max(h, Math.exp(-((x - o.center[0]) ** 2 + (y - o.center[1]) ** 2) / (2 * sigma * sigma)));
+      }
+      heat[ty * BX + tx] = h;
+    }
+
+    // ---- Meshes ----
+    const cube = new THREE.BoxGeometry(1, 1, 1);
+    const fineMat = new THREE.MeshStandardMaterial({ roughness: 0.6 });
+    const fineMesh = new THREE.InstancedMesh(cube, fineMat, fine.length);
+    const coarseMat = new THREE.MeshStandardMaterial({ roughness: 0.6 });
+    const coarseMesh = new THREE.InstancedMesh(cube, coarseMat, coarse.length);
+    const tileMesh = new THREE.InstancedMesh(cube, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7 }), NT);
+    tileMesh.setColorAt(0, new THREE.Color());
+    scene.add(fineMesh, coarseMesh, tileMesh);
+
+    const X0 = MIN[0], Y0 = MIN[1], X1 = MIN[0] + N[0] * VOX, Y1 = MIN[1] + N[1] * VOX, Z1 = N[2] * VOX;
+    const lat: number[] = [];
+    for (const z of [0, Z1]) {
+      for (let i = 0; i <= N[0]; i += 2) lat.push(X0 + i * VOX, Y0, z, X0 + i * VOX, Y1, z);
+      for (let j = 0; j <= N[1]; j += 2) lat.push(X0, Y0 + j * VOX, z, X1, Y0 + j * VOX, z);
+    }
+    for (const [x, y] of [[X0, Y0], [X1, Y0], [X0, Y1], [X1, Y1]]) lat.push(x, y, 0, x, y, Z1);
+    const gridGeo = new THREE.BufferGeometry();
+    gridGeo.setAttribute('position', new THREE.Float32BufferAttribute(lat, 3));
+    const gridMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0 });
+    scene.add(new THREE.LineSegments(gridGeo, gridMat));
+
+    // z-slices: one 2D feature-map board per coarse height level
+    const boardMat = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false });
+    const boardEdgeMat = new THREE.LineBasicMaterial({ transparent: true });
+    const boardGeo = new THREE.BoxGeometry(X1 - X0, Y1 - Y0, 0.04);
+    const boardEdges = new THREE.EdgesGeometry(boardGeo);
+    const boards = Array.from({ length: NZ }, () => {
+      const g = new THREE.Group();
+      g.add(new THREE.Mesh(boardGeo, boardMat), new THREE.LineSegments(boardEdges, boardEdgeMat));
+      g.position.set((X0 + X1) / 2, (Y0 + Y1) / 2, 0);
+      scene.add(g);
+      return g;
+    });
+    const stage = canvas.parentElement!;
+    const sliceTags = boards.map((_, z) => {
+      const el = document.createElement('div');
+      el.className = 'viz-tag';
+      el.textContent = `z ${(z * CV).toFixed(1)}–${((z + 1) * CV).toFixed(1)} m`;
+      el.hidden = true;
+      stage.appendChild(el);
+      return el;
+    });
+
+    const edgeBox = (w: number, l: number, h: number) => new THREE.EdgesGeometry(new THREE.BoxGeometry(w, l, h));
+    const kernelMat = new THREE.LineBasicMaterial();
+    const kernel3d = new THREE.LineSegments(edgeBox(3 * CV, 3 * CV, 3 * CV), kernelMat);
+    const kernel2d = new THREE.LineSegments(edgeBox(3 * CV, 3 * CV, 0.5), kernelMat);
+    scene.add(kernel3d, kernel2d);
+
+    const egoMat = new THREE.LineBasicMaterial();
+    const ego = new THREE.LineSegments(edgeBox(EGO.size[0], EGO.size[1], EGO.size[2]), egoMat);
+    ego.position.set(...EGO.center);
+    scene.add(ego);
+
+    // Predicted boxes: wireframe + translucent fill + center marker, one per object
+    const lineMats = [0, 1].map(() => new THREE.LineBasicMaterial({ transparent: true }));
+    const fillMats = [0, 1].map(() => new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false }));
+    const unitEdges = edgeBox(1, 1, 1);
+    const sphere = new THREE.SphereGeometry(0.22, 16, 12);
+    const dets = objects.map((o) => {
+      const g = new THREE.Group();
+      g.position.set(...o.center);
+      g.rotation.z = o.yaw;
+      const frame = new THREE.LineSegments(unitEdges, lineMats[o.kind]);
+      const fill = new THREE.Mesh(cube, fillMats[o.kind]);
+      const pin = new THREE.Mesh(sphere, fillMats[o.kind]);
+      g.add(frame, fill, pin);
+      scene.add(g);
+      return { o, frame, fill, pin };
+    });
+    const detOrder = dets.map((_, i) => i).sort((a, b) => objects[a].center[1] - objects[b].center[1]);
+    // Annotate the car closest to the middle of the grid
+    const midY = MIN[1] + (N[1] * VOX) / 2;
+    const featured = objects.reduce((best, o, i) =>
+      o.kind === 0 && Math.hypot(o.center[0], o.center[1] - midY) < Math.hypot(objects[best].center[0], objects[best].center[1] - midY) ? i : best, 0);
+
+    // Camera field of view (KITTI only): a fan on the ground plus its two edges, centred on +Y
+    const FOV_R = 56;
+    const halfFov = meta.halfFov ?? 0;
+    const fovMat = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide, opacity: 0 });
+    const rayMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0 });
+    const fovTag = document.createElement('div');
+    fovTag.className = 'viz-tag';
+    fovTag.hidden = true;
+    if (halfFov) {
+      const fov = new THREE.Mesh(new THREE.CircleGeometry(FOV_R, 48, Math.PI / 2 - halfFov, 2 * halfFov), fovMat);
+      fov.position.z = 0.02;
+      const rayGeo = new THREE.BufferGeometry().setFromPoints([-1, 1].flatMap((sgn) => [
+        new THREE.Vector3(0, 0, 0.03),
+        new THREE.Vector3(sgn * FOV_R * Math.sin(halfFov), FOV_R * Math.cos(halfFov), 0.03),
+      ]));
+      scene.add(fov, new THREE.LineSegments(rayGeo, rayMat));
+      fovTag.textContent = `Camera FOV ${((2 * halfFov * 180) / Math.PI).toFixed(0)}° · KITTI labels only inside`;
+      stage.appendChild(fovTag);
+    }
+
+    const annot = stage.querySelector<HTMLElement>('.viz-annot')!;
+    {
+      const o = objects[featured];
+      annot.innerHTML =
+        `<b>${o.label}</b> center (${o.center.map((c) => c.toFixed(1)).join(', ')})<br>` +
+        `l ${o.size[1].toFixed(1)} · w ${o.size[0].toFixed(1)} · h ${o.size[2].toFixed(1)} m · θ ${((((o.yaw * 180) / Math.PI + 540) % 360) - 180).toFixed(0)}°`;
+    }
+
+    // ---- Timeline (seconds) ----
+    const T = { vox: 3, conv: 6.5, bev: 10.5, head: 15.5, reg: 19, det: 22.5, out: 27, end: 28.5 };
+    const BOUNDS = [0, T.vox, T.conv, T.bev, T.head, T.reg, T.out];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    const tc = coarse.map((_, k) => T.conv + 0.4 + (k / coarse.length) * (T.bev - T.conv - 1));
+    const tv = (r: number) => T.head + 0.3 + (r / NT) * (T.reg - T.head - 0.7);
+    const detStart = new Float32Array(dets.length);
+    detOrder.forEach((d, n) => (detStart[d] = T.reg + 0.3 + n * (2.4 / dets.length)));
+    // Height compression: explode into slices, hold, then stack into thin channels
+    const sliceZ = (z: number) => 1.4 + z * 2.6;
+    const stackZ = (z: number) => 0.06 + z * 0.1;
+
+    const hud = canvas.parentElement!.querySelector<HTMLElement>('.viz-hud')!;
+    const hudIdx = hud.querySelector<HTMLElement>('.viz-idx')!;
+    const hudName = hud.querySelector<HTMLElement>('.viz-name')!;
+    const bars = hud.querySelectorAll<HTMLElement>('.viz-progress i');
+    let shownStep = -1;
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const v = new THREE.Vector3();
+    const sc = new THREE.Vector3();
+    const col = new THREE.Color();
+    const col2 = new THREE.Color();
+    const target = new THREE.Vector3(MIN[0] + (N[0] * VOX) / 2, MIN[1] + (N[1] * VOX) / 2, 1);
+    let lastT = -1, lastColorKey = '';
+    const setInstance = (mesh: T3.InstancedMesh, k: number, x: number, y: number, z: number, sx: number, sy: number, sz: number) => {
+      m.compose(v.set(x, y, z), q, sc.set(sx || 1e-4, sy || 1e-4, sz || 1e-4));
+      mesh.setMatrixAt(k, m);
+    };
+    const toScreen = (x: number, y: number, z: number, el: HTMLElement, w: number, h: number) => {
+      v.set(x, y, z).project(camera);
+      el.style.left = `${((v.x + 1) / 2) * w}px`;
+      el.style.top = `${((1 - v.y) / 2) * h}px`;
+    };
+
+    function frame(time: number) {
+      const t = time % T.end;
+      const P = isDark() ? PALETTES.dark : PALETTES.light;
+
+      let step = 0;
+      while (step + 1 < STEPS.length && t >= BOUNDS[step + 1]) step++;
+      if (step !== shownStep) {
+        shownStep = step;
+        hudIdx.textContent = String(step + 1).padStart(2, '0');
+        hudName.textContent = STEPS[step];
+        bars.forEach((b, i) => b.style.setProperty('--p', i < step ? '1' : '0'));
+      }
+      bars[step].style.setProperty('--p', ramp(t, BOUNDS[step], BOUNDS[step + 1]).toFixed(3));
+
+      const restore = ease(ramp(t, T.det, T.det + 1.5));
+      const loopFade = 1 - ramp(t, T.out, T.end);
+
+      const wrapped = t < lastT;
+      lastT = t;
+
+      // FOV fan: appears during the first step and stays; points outside it fade back
+      const fovOn = halfFov ? ease(ramp(t, 0.8, 2)) * loopFade : 0;
+      fovMat.color.copy(P.grid);
+      fovMat.opacity = 0.07 * fovOn;
+      rayMat.color.copy(P.grid);
+      rayMat.opacity = 0.7 * fovOn;
+
+      // Points (recoloured only when something changed)
+      const redAmt = ease(ramp(t, T.vox + 0.5, T.vox + 2)) * (1 - restore);
+      const hideIn = ease(ramp(t, T.vox + 2, T.conv)) * (1 - restore);
+      const dimOut = 0.7 * ease(ramp(t, T.conv, T.conv + 1)) * (1 - restore);
+      const outFov = 0.7 * fovOn;
+      const colorKey = [redAmt, hideIn, dimOut, outFov].map((x) => x.toFixed(3)).join() + P.bg.getHex();
+      if (colorKey !== lastColorKey) {
+        lastColorKey = colorKey;
+        for (let i = 0; i < count; i++) {
+          baseColor(P.stops, i, col);
+          if (inside[i]) col.lerp(P.active, redAmt).lerp(P.bg, 0.95 * hideIn);
+          else col.lerp(P.bg, flags[i] & 2 ? dimOut : Math.max(dimOut, outFov));
+          pointColors[3 * i] = col.r; pointColors[3 * i + 1] = col.g; pointColors[3 * i + 2] = col.b;
+        }
+        pointGeo.attributes.color.needsUpdate = true;
+      }
+
+      gridMat.color.copy(P.grid);
+      gridMat.opacity = 0.3 * ease(ramp(t, T.vox, T.vox + 1)) * (1 - ease(ramp(t, T.bev, T.bev + 0.8)));
+      egoMat.color.copy(P.ego);
+
+      // Fine voxels: pop in front-to-back, then merge into coarse voxels as the kernel passes
+      fineMat.color.copy(P.active);
+      if (wrapped || (t > T.vox + 1.4 && t < T.bev + 0.2)) fine.forEach(([ix, iy, iz], k) => {
+        const a = T.vox + 1.5 + (iy / N[1]) * 1.2;
+        const merged = ease(ramp(t, tc[fineParent[k]], tc[fineParent[k]] + 0.3));
+        const s = ease(ramp(t, a, a + 0.5)) * (1 - merged) * 0.88 * VOX;
+        setInstance(fineMesh, k, X0 + (ix + 0.5) * VOX, Y0 + (iy + 0.5) * VOX, (iz + 0.5) * VOX, s, s, s);
+      });
+      fineMesh.instanceMatrix.needsUpdate = true;
+
+      // Coarse voxels: appear when visited; then split into z-slices and stack into BEV channels
+      coarseMat.color.copy(P.active).lerp(P.heatLo, 0.25);
+      const explode = ease(ramp(t, T.bev, T.bev + 1.4));
+      const stack = ease(ramp(t, T.bev + 2.8, T.bev + 4));
+      const gone = ramp(t, T.bev + 3.9, T.bev + 4.5);
+      const thick = 0.88 * CV + (0.2 - 0.88 * CV) * explode + (0.07 - 0.2) * stack;
+      if (wrapped || (t > T.conv + 0.3 && t < T.bev + 4.6)) coarse.forEach(([cx, cy, cz], k) => {
+        const s = ease(ramp(t, tc[k], tc[k] + 0.3)) * 0.88 * CV * (1 - gone);
+        const z0 = (cz + 0.5) * CV;
+        const zc = z0 + (sliceZ(cz) - z0) * explode + (stackZ(cz) - sliceZ(cz)) * stack;
+        setInstance(coarseMesh, k, X0 + (cx + 0.5) * CV, Y0 + (cy + 0.5) * CV, zc, s, s, (s && thick) * (1 - gone));
+      });
+      coarseMesh.instanceMatrix.needsUpdate = true;
+
+      const boardsOn = explode * (1 - gone);
+      boardMat.color.copy(P.idle);
+      boardMat.opacity = 0.55 * boardsOn;
+      boardEdgeMat.color.copy(P.feature);
+      boardEdgeMat.opacity = boardsOn;
+      boards.forEach((b, z) => {
+        b.visible = boardsOn > 0;
+        b.position.z = sliceZ(z) + (stackZ(z) - sliceZ(z)) * stack - 0.12;
+      });
+
+      kernelMat.color.copy(P.kernel);
+      kernel3d.visible = t > T.conv + 0.4 && t < T.bev - 0.6;
+      if (kernel3d.visible) {
+        const c = coarse[Math.min(coarse.length - 1, Math.floor(ramp(t, T.conv + 0.4, T.bev - 0.6) * coarse.length))];
+        kernel3d.position.set(X0 + (c[0] + 0.5) * CV, Y0 + (c[1] + 0.5) * CV, (c[2] + 0.5) * CV);
+      }
+
+      // BEV tiles → heatmap bars as the 2D kernel sweeps
+      const tilesOn = ease(ramp(t, T.bev + 3.8, T.bev + 4.5)) * (1 - ease(ramp(t, T.det, T.det + 1.2)));
+      if (wrapped || (t > T.bev + 3.7 && t < T.det + 1.3)) for (let r = 0; r < NT; r++) {
+        const tx = r % BX, ty = Math.floor(r / BX);
+        const hOn = ease(ramp(t, tv(r), tv(r) + 0.35));
+        const h = heat[r];
+        const hgt = (0.08 + 0.14 * feat[r] + 2.6 * h * h * hOn) * tilesOn;
+        setInstance(tileMesh, r, X0 + (tx + 0.5) * CV, Y0 + (ty + 0.5) * CV, hgt / 2, 0.8 * CV * tilesOn, 0.8 * CV * tilesOn, hgt);
+        col.copy(P.idle).lerp(P.feature, feat[r]);
+        if (h < 0.5) col2.copy(col).lerp(P.heatLo, h * 2);
+        else col2.copy(P.heatLo).lerp(P.heatHi, (h - 0.5) * 2);
+        tileMesh.setColorAt(r, col.lerp(col2, hOn * Math.min(1, h * 3)));
+      }
+      tileMesh.instanceMatrix.needsUpdate = true;
+      tileMesh.instanceColor!.needsUpdate = true;
+
+      kernel2d.visible = t > T.head + 0.3 && t < T.reg - 0.4;
+      if (kernel2d.visible) {
+        const r = Math.min(NT - 1, Math.floor(ramp(t, T.head + 0.3, T.reg - 0.4) * NT));
+        kernel2d.position.set(X0 + ((r % BX) + 0.5) * CV, Y0 + (Math.floor(r / BX) + 0.5) * CV, 0.3);
+      }
+
+      // Boxes grow from the predicted center: length, then width, then height
+      dets.forEach((d, i) => {
+        const a = detStart[i];
+        const pinOn = ease(ramp(t, a - 0.2, a)) * (1 - ramp(t, T.det + 0.5, T.det + 1));
+        const sl = ease(ramp(t, a, a + 0.45)), sw = ease(ramp(t, a + 0.3, a + 0.75)), sh = ease(ramp(t, a + 0.6, a + 1.05));
+        d.frame.visible = d.fill.visible = sl > 0 && loopFade > 0;
+        d.pin.visible = pinOn > 0;
+        d.frame.scale.set(d.o.size[0] * sw || 1e-3, d.o.size[1] * sl || 1e-3, d.o.size[2] * sh || 1e-3);
+        d.fill.scale.copy(d.frame.scale);
+        d.pin.scale.setScalar(pinOn || 1e-3);
+      });
+      [0, 1].forEach((k) => {
+        lineMats[k].color.copy(P.box[k]);
+        lineMats[k].opacity = loopFade;
+        fillMats[k].color.copy(P.box[k]);
+        fillMats[k].opacity = 0.16 * loopFade;
+      });
+
+      // Camera: side view of the street with a gentle sway
+      const w = canvas.clientWidth, hh = canvas.clientHeight;
+      const k = Math.max(1, 2.1 / (w / hh));
+      const ang = -0.75 + 0.14 * Math.sin(time * 0.1);
+      camera.position.set(target.x + 43 * k * Math.cos(ang), target.y + 43 * k * Math.sin(ang), 31 * k);
+      camera.lookAt(target);
+      renderer.render(scene, camera);
+
+      // HTML labels: FOV, slice heights, and the regressed box parameters of one car
+      fovTag.hidden = !(halfFov && t > 1.2 && t < T.vox + 2);
+      if (!fovTag.hidden) toScreen(-FOV_R * 0.62 * Math.sin(halfFov), FOV_R * 0.62 * Math.cos(halfFov), 0.3, fovTag, w, hh);
+      const tagsOn = explode > 0.6 && stack < 0.3;
+      sliceTags.forEach((el, z) => {
+        el.hidden = !tagsOn;
+        if (tagsOn) toScreen(X0, Y1 + 0.6, sliceZ(z), el, w, hh);
+      });
+      const showAnnot = t > detStart[featured] + 1.05 && t < T.det + 1.2;
+      annot.hidden = !showAnnot;
+      if (showAnnot) {
+        const o = objects[featured];
+        toScreen(o.center[0], o.center[1], o.center[2] + o.size[2] / 2 + 0.4, annot, w, hh);
+      }
+    }
+
+    const resize = () => {
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    };
+    resize();
+
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      const still = () => { resize(); frame(T.det + 2); };
+      still();
+      window.addEventListener('resize', still);
+      new MutationObserver(still).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+      return;
+    }
+    window.addEventListener('resize', resize);
+    let visible = true;
+    let raf: number | null = null;
+    const loop = (ms: number) => { frame(ms / 1000); raf = visible ? requestAnimationFrame(loop) : null; };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  }
+</script>

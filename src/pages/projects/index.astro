@@ -1,0 +1,34 @@
+---
+import { getCollection } from 'astro:content';
+import Base from '../../layouts/Base.astro';
+import ProjectCard from '../../components/ProjectCard.astro';
+
+const projects = (await getCollection('projects')).sort((a, b) => a.data.order - b.data.order);
+---
+<Base title="Projects" description="Industry and research projects in 3D perception, autonomous driving and robotics.">
+  <header class="page-header">
+    <h1>Projects</h1>
+    <p class="lead">Production systems for ADAS and smart factories, and research on LiDAR-based 3D perception and legged robots.</p>
+  </header>
+
+  <div class="filters">
+    <button class="filter active" data-filter="all">All</button>
+    <button class="filter" data-filter="industry">Industry</button>
+    <button class="filter" data-filter="research">Research</button>
+  </div>
+
+  <div class="grid" id="project-grid">
+    {projects.map((p) => <ProjectCard project={p} />)}
+  </div>
+</Base>
+
+<script>
+  const buttons = document.querySelectorAll<HTMLButtonElement>('.filter');
+  buttons.forEach((b) => b.addEventListener('click', () => {
+    buttons.forEach((x) => x.classList.toggle('active', x === b));
+    const f = b.dataset.filter;
+    document.querySelectorAll<HTMLElement>('#project-grid .card').forEach((c) => {
+      c.classList.toggle('hidden', f !== 'all' && c.dataset.category !== f);
+    });
+  }));
+</script>
