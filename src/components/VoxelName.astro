@@ -1,8 +1,10 @@
 ---
 // The site name as a voxel sculpture: each word (ANH / HIEP / HOANG) is built from cubes, three voxels
-// thick, on one face of a triangular prism. Voxels fly in and converge into the letters, then the camera
-// orbits the prism (drag to turn it). Each voxel carries an occupancy probability that sets its shade and
-// is printed on its front face; words facing away fade out. An SVG of the flat name is the no-WebGL fallback.
+// thick, on one face of a triangular prism. Intro: all voxels start as a scrambled three-colour Rubik's cube,
+// unspool into a sequence of 3 × 3 token slices, run through a network block (its front face shows a fully
+// connected net firing layer by layer) and come out as the letters of the prism. Then the camera moves in and
+// orbits the prism (drag to turn it). Each voxel carries an occupancy probability that sets its shade and is
+// printed on its front face; words facing away fade out. An SVG of the flat name is the no-WebGL fallback.
 import { layoutText, voxelColor, ROWS } from '../lib/voxelFont';
 
 interface Props { text?: string }
@@ -60,14 +62,14 @@ for (const { x, y } of cells) {
     const hash = (a: number, b: number) => ((((Math.sin(a * 12.9898 + b * 78.233) * 43758.5453) % 1) + 1) % 1);
 
     // ---- Voxels: one face of the prism per word, at 0°, 120°, 240° ----
-    type Voxel = { p: InstanceType<typeof THREE.Vector3>; from: InstanceType<typeof THREE.Vector3>; prob: number; delay: number };
+    type Voxel = { p: InstanceType<typeof THREE.Vector3>; prob: number; color: number[]; front: boolean };
     const faces = words.map((word, k) => {
       const a = (k * 2 * Math.PI) / words.length;
       const n = new THREE.Vector3(Math.sin(a), 0, Math.cos(a));  // outward normal
       const t = new THREE.Vector3(Math.cos(a), 0, -Math.sin(a)); // reading direction
       const { cells, cols } = layoutText(word);
       const [from, to] = WORD_COLORS[k % WORD_COLORS.length];
-      const voxels: (Voxel & { color: number[]; front: boolean })[] = [];
+      const voxels: Voxel[] = [];
       for (const { x, y } of cells) {
         for (let d = 0; d < DEPTH; d++) {
           const p = new THREE.Vector3().addScaledVector(t, x - cols / 2 + 0.5).addScaledVector(n, R - 0.5 - d);
@@ -75,17 +77,49 @@ for (const { x, y } of cells) {
           const prob = 0.6 + 0.39 * hash(x + k * 31, y + d * 7);
           const f = cols > 1 ? x / (cols - 1) : 0;
           const shade = (1.08 - d * 0.16) * (0.7 + 0.3 * prob);
-          // Start somewhere around the prism and converge
-          const r = 14 + 20 * hash(x * 3 + d, y + k * 5), th = 6.283 * hash(y + d, x + k), ph = Math.PI * hash(x + k, y * 2 + d);
-          const start = new THREE.Vector3(r * Math.sin(ph) * Math.cos(th), ROWS / 2 + r * Math.cos(ph) * 0.6, r * Math.sin(ph) * Math.sin(th));
-          voxels.push({
-            p, from: start, prob, delay: 0.9 * hash(x + d * 3, y + k), front: d === 0,
-            color: from.map((v, i) => Math.min(255, (v + (to[i] - v) * f) * shade)),
-          });
+          voxels.push({ p, prob, front: d === 0, color: from.map((v, i) => Math.min(255, (v + (to[i] - v) * f) * shade)) });
         }
       }
       return { a, n, voxels };
     });
+
+    // ---- Intro layout, in world units. The intro camera looks along −z, so x is screen-right:
+    //      Rubik's cube | lane of token slices | network block | prism (centred at the origin) ----
+    const N = faces.reduce((s, f) => s + f.voxels.length, 0);
+    const CUBE = Math.ceil(Math.cbrt(N));          // cube side; the spare slots hold "ghost" tokens
+    const GHOSTS = CUBE ** 3 - N;
+    const LANE_Y = CUBE / 2, SLICE = 9;            // lane at the cube's mid-height; a token = a 3 × 3 slice of voxels
+    const prismHalf = (widest + 3) / 2 + 0.5;
+    const MACH_W = 18, MACH_H = 20; // the network block (nodes and connections only), clearly larger than the cube
+    const machR = -prismHalf - 5, machL = machR - MACH_W;
+    const laneX0 = machL - 12;
+    const cubeC = new THREE.Vector3(laneX0 - 2.5 - CUBE / 2, CUBE / 2, 0);
+    const viewL = cubeC.x - CUBE / 2 - 2, viewR = prismHalf + 2;
+    const T_HOLD = 1.1, UNSPOOL = 3.0, T_LIFT = 0.35, T_FLY = 1.0, PAN = 1.3;
+    const slices = Math.ceil((N + GHOSTS) / SLICE);
+    const dtSlice = UNSPOOL / slices, SPEED = 1 / dtSlice; // one slice per world unit along the lane
+    const tOut = T_LIFT + (machR - laneX0) / SPEED;       // token time from leaving the cube to leaving the block
+    const machOn = T_HOLD + T_LIFT + (machL - laneX0) / SPEED, machOff = T_HOLD + UNSPOOL + tOut;
+    const introEnd = machOff + T_FLY;
+
+    // Cube slots in unspool order: the face towards the lane first, column by column from the top
+    const slots: number[][] = [];
+    for (let ix = CUBE - 1; ix >= 0; ix--) for (let iz = 0; iz < CUBE; iz++) for (let iy = CUBE - 1; iy >= 0; iy--) slots.push([ix, iy, iz]);
+    // Tokens (every voxel plus the ghosts) take the slots in a seeded random order: a scrambled cube
+    const order = Array.from({ length: N + GHOSTS }, (_, i) => i);
+    let seed = 7;
+    const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+    const intro = (q: number) => { // q: position in the unspool order → cube position, lane offset, start time
+      const [ix, iy, iz] = slots[q], m = q % SLICE;
+      return {
+        cube: [cubeC.x + ix - (CUBE - 1) / 2, iy + 0.5, iz - (CUBE - 1) / 2],
+        lane: [0, (m % 3) - 1, Math.floor(m / 3) - 1],
+        delay: T_HOLD + Math.floor(q / SLICE) * dtSlice,
+      };
+    };
+    const rank = new Array<number>(order.length);
+    order.forEach((token, q) => (rank[token] = q));
 
     // ---- Probability labels: a texture atlas of ".60" … ".99", sampled per instance ----
     const atlas = document.createElement('canvas');
@@ -125,31 +159,70 @@ for (const { x, y } of cells) {
     const m = new THREE.Matrix4(), sc = new THREE.Vector3(1, 1, 1), c = new THREE.Color();
     const pos = new THREE.Vector3();
 
-    // Fly-in runs on the GPU: each instance stores its start offset and delay; the vertex shader blends
-    // from the scattered position to the letter with one shared time uniform (also used for the shadow).
-    const uT = { value: 0 };
-    const flyIn = (shader: { uniforms: Record<string, unknown>; vertexShader: string }) => {
-      shader.uniforms.uT = uT;
-      shader.vertexShader = 'attribute vec3 aOffset;\nattribute float aDelay;\nuniform float uT;\n' +
-        shader.vertexShader.replace('#include <begin_vertex>', `
-          float k = clamp((uT - aDelay) / 1.7, 0.0, 1.0);
-          k = 1.0 - pow(1.0 - k, 3.0);
-          vec3 transformed = position * (0.3 + 0.7 * k) + aOffset * (1.0 - k);`);
+    // The whole intro runs on the GPU: each instance stores its cube slot, its offset inside a token slice and
+    // its start time; the vertex shader moves it cube → lane → through the block → its letter (the instance
+    // matrix holds the letter position) with one shared time uniform, also used for the shadow pass.
+    const U = {
+      uT: { value: 0 }, uCubeRot: { value: 0 }, uCubeC: { value: cubeC },
+      uLaneX0: { value: laneX0 }, uMachL: { value: machL }, uMachR: { value: machR }, uLaneY: { value: LANE_Y }, uSpeed: { value: SPEED },
     };
-    const depthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
-    depthMat.onBeforeCompile = flyIn;
+    const path = (shader: { uniforms: Record<string, unknown>; vertexShader: string }) => {
+      Object.assign(shader.uniforms, U);
+      shader.vertexShader = `attribute vec3 aCube; attribute vec3 aLane; attribute float aDelay;
+        uniform float uT, uCubeRot, uLaneX0, uMachL, uMachR, uLaneY, uSpeed; uniform vec3 uCubeC;\n` +
+        shader.vertexShader.replace('#include <begin_vertex>', `
+          vec3 pFin = instanceMatrix[3].xyz;
+          float u = uT - aDelay, s = 1.0;
+          vec3 rel = aCube - uCubeC;
+          float cr = cos(uCubeRot), sr = sin(uCubeRot);
+          vec3 inCube = uCubeC + vec3(cr * rel.x + sr * rel.z, rel.y, -sr * rel.x + cr * rel.z);
+          vec3 lane0 = vec3(uLaneX0, uLaneY, 0.0) + aLane;
+          float tOut = ${T_LIFT.toFixed(2)} + (uMachR - uLaneX0) / uSpeed;
+          vec3 W;
+          if (u < 0.0) W = inCube;
+          else if (u < ${T_LIFT.toFixed(2)}) { float k = u / ${T_LIFT.toFixed(2)}; W = mix(inCube, lane0, k * k * (3.0 - 2.0 * k)); }
+          else if (u < tOut) {
+            W = lane0 + vec3((u - ${T_LIFT.toFixed(2)}) * uSpeed, 0.0, 0.0);
+            float f = clamp((W.x - uMachL) / (uMachR - uMachL), 0.0, 1.0); // inside the net: shrink, then grow back
+            s = 1.0 - 0.7 * sin(3.14159 * f);
+            #ifdef GHOST
+              if (f > 0.5) s = 0.0; // ghost tokens are absorbed by the net
+            #endif
+          }
+          else {
+            float k = clamp((u - tOut) / ${T_FLY.toFixed(2)}, 0.0, 1.0);
+            W = mix(vec3(uMachR, uLaneY, 0.0) + aLane, pFin, 1.0 - pow(1.0 - k, 3.0));
+            W.y += sin(3.14159 * k) * 2.0;
+            #ifdef GHOST
+              s = 0.0; // ghost tokens are absorbed by the block
+            #endif
+          }
+          vec3 transformed = position * s + (W - pFin);`);
+    };
+    const depthMat = (ghost: boolean) => {
+      const d = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+      if (ghost) d.defines = { GHOST: '' };
+      d.onBeforeCompile = path;
+      return d;
+    };
+    const introAttrs = (geo: InstanceType<typeof THREE.BufferGeometry>, tokens: number[]) => {
+      const info = tokens.map((tk) => intro(rank[tk]));
+      geo.setAttribute('aCube', new THREE.InstancedBufferAttribute(Float32Array.from(info.flatMap((i) => i.cube)), 3));
+      geo.setAttribute('aLane', new THREE.InstancedBufferAttribute(Float32Array.from(info.flatMap((i) => i.lane)), 3));
+      geo.setAttribute('aDelay', new THREE.InstancedBufferAttribute(Float32Array.from(info, (i) => i.delay), 1));
+    };
 
+    let token = 0;
     const meshes = faces.map(({ a, n, voxels }) => {
       const mat = new THREE.MeshStandardMaterial({ roughness: 0.42, metalness: 0.05, transparent: true });
-      mat.onBeforeCompile = flyIn;
+      mat.onBeforeCompile = path;
       const geo = cube.clone();
-      geo.setAttribute('aOffset', new THREE.InstancedBufferAttribute(
-        Float32Array.from(voxels.flatMap((v) => [v.from.x - v.p.x, v.from.y - v.p.y, v.from.z - v.p.z])), 3));
-      geo.setAttribute('aDelay', new THREE.InstancedBufferAttribute(Float32Array.from(voxels, (v) => v.delay), 1));
+      introAttrs(geo, voxels.map(() => token++));
       const mesh = new THREE.InstancedMesh(geo, mat, voxels.length);
-      mesh.customDepthMaterial = depthMat;
+      mesh.customDepthMaterial = depthMat(false);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
+      mesh.frustumCulled = false; // instances travel far from their letters during the intro
       voxels.forEach((v, i) => {
         mesh.setMatrixAt(i, m.makeTranslation(v.p.x, v.p.y, v.p.z));
         mesh.setColorAt(i, c.setRGB(v.color[0] / 255, v.color[1] / 255, v.color[2] / 255, THREE.SRGBColorSpace));
@@ -168,28 +241,106 @@ for (const { x, y } of cells) {
       return { n, mat, labelOpacity };
     });
 
-    const ground = new THREE.Mesh(new THREE.CircleGeometry(R * 3, 48), new THREE.ShadowMaterial({ opacity: 0.2 }));
+    // Ghost tokens fill the spare cube slots (random word colours), ride into the block and vanish there
+    let ghostMesh: InstanceType<typeof THREE.InstancedMesh> | null = null;
+    if (GHOSTS > 0) {
+      const mat = new THREE.MeshStandardMaterial({ roughness: 0.42, metalness: 0.05 });
+      mat.defines = { GHOST: '' };
+      mat.onBeforeCompile = path;
+      const geo = cube.clone();
+      introAttrs(geo, Array.from({ length: GHOSTS }, () => token++));
+      ghostMesh = new THREE.InstancedMesh(geo, mat, GHOSTS);
+      ghostMesh.customDepthMaterial = depthMat(true);
+      ghostMesh.castShadow = true;
+      ghostMesh.frustumCulled = false;
+      for (let i = 0; i < GHOSTS; i++) {
+        const [from, to] = WORD_COLORS[Math.floor(hash(i, 3) * 3)];
+        const f = hash(i, 9);
+        ghostMesh.setMatrixAt(i, m.makeTranslation((machL + machR) / 2, LANE_Y, 0));
+        ghostMesh.setColorAt(i, c.setRGB(...(from.map((v, j) => (v + (to[j] - v) * f) / 255) as [number, number, number]), THREE.SRGBColorSpace));
+      }
+      scene.add(ghostMesh);
+    }
+
+    // ---- The network block: an upright plane with a fully connected net (nodes and connections only) firing layer by layer ----
+    const att = document.createElement('canvas');
+    att.width = 450; att.height = 500;
+    const tctx = att.getContext('2d')!;
+    const attTex = new THREE.CanvasTexture(att);
+    attTex.colorSpace = THREE.SRGBColorSpace;
+    const LAYERS = [9, 11, 11, 9];
+    const nodes = LAYERS.map((n, l) => Array.from({ length: n }, (_, i) => [
+      30 + (l * (att.width - 60)) / (LAYERS.length - 1), att.height / 2 + (i - (n - 1) / 2) * 44] as const));
+    // Every node lights up in one of the three word colours; a lit connection takes its source node's colour
+    const nodeRgb = nodes.map((col, l) => col.map((_, i) => WORD_COLORS[Math.floor(hash(l * 13 + i, 5) * 3)][1]));
+    const drawNet = (phase: number, on: number) => {
+      // phase ∈ [0, 1): the signal front moving from the input layer to the output layer
+      tctx.clearRect(0, 0, att.width, att.height);
+      const front = phase * (LAYERS.length - 1);
+      tctx.lineWidth = 2;
+      tctx.strokeStyle = 'rgba(100, 116, 139, 0.45)';
+      tctx.beginPath();
+      for (let l = 0; l + 1 < LAYERS.length; l++) {
+        for (const [ax, ay] of nodes[l]) for (const [bx, by] of nodes[l + 1]) { tctx.moveTo(ax, ay); tctx.lineTo(bx, by); }
+      }
+      tctx.stroke();
+      for (let l = 0; l + 1 < LAYERS.length; l++) {
+        const lit = on * Math.max(0, 1 - Math.abs(front - (l + 0.5)) * 1.4);
+        if (lit < 0.05) continue;
+        tctx.lineWidth = 2 + 2 * lit;
+        nodes[l].forEach(([ax, ay], i) => {
+          tctx.strokeStyle = `rgba(${nodeRgb[l][i].join(',')}, ${0.35 + 0.65 * lit})`;
+          tctx.beginPath();
+          for (const [bx, by] of nodes[l + 1]) { tctx.moveTo(ax, ay); tctx.lineTo(bx, by); }
+          tctx.stroke();
+        });
+      }
+      nodes.forEach((col, l) => col.forEach(([x, y], i) => {
+        const lit = on * Math.max(0, 1 - Math.abs(front - l) * 1.6) * (0.6 + 0.4 * hash(l * 7 + i, Math.floor(phase * 6)));
+        tctx.beginPath(); tctx.arc(x, y, 19, 0, Math.PI * 2);
+        const [r, g, b] = nodeRgb[l][i];
+        tctx.fillStyle = lit > 0.05 ? `rgb(${r}, ${g}, ${b})` : 'rgb(176, 184, 204)';
+        tctx.globalAlpha = lit > 0.05 ? 0.55 + 0.45 * lit : 1;
+        tctx.fill();
+        tctx.globalAlpha = 1;
+      }));
+      attTex.needsUpdate = true;
+    };
+    drawNet(0, 0);
+    const faceMat = new THREE.MeshBasicMaterial({ map: attTex, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+    const machine = new THREE.Mesh(new THREE.PlaneGeometry(MACH_W, MACH_H), faceMat);
+    machine.position.set((machL + machR) / 2, LANE_Y, 0); // centred on the cube and the lane
+    scene.add(machine);
+
+    const groundW = viewR - viewL + 30;
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(groundW, 60), new THREE.ShadowMaterial({ opacity: 0.2, depthWrite: false }));
     ground.rotation.x = -Math.PI / 2;
+    ground.position.x = (viewL + viewR) / 2;
     ground.receiveShadow = true;
     scene.add(ground);
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0x8899bb, 1.5));
     const sun = new THREE.DirectionalLight(0xffffff, 2.4);
-    sun.position.set(R * 1.5, 26, R * 2.5);
+    sun.position.set(ground.position.x + R * 1.5, 26, R * 2.5);
+    sun.target.position.set(ground.position.x, 0, 0);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(1024, 1024);
-    Object.assign(sun.shadow.camera, { left: -R * 2.5, right: R * 2.5, top: R * 2.5, bottom: -R * 2.5, near: 1, far: 120 });
+    sun.shadow.mapSize.set(2048, 1024);
+    const sh = groundW / 2;
+    Object.assign(sun.shadow.camera, { left: -sh, right: sh, top: R * 2.5, bottom: -R * 2.5, near: 1, far: 140 });
     sun.shadow.bias = -0.002;
     sun.shadow.normalBias = 0.03;
-    scene.add(sun);
+    scene.add(sun, sun.target);
 
-    // ---- Camera: orthographic, orbiting continuously, slowing a little as each word faces it ----
+    // ---- Camera: orthographic. Intro: a fixed front view, zoomed out to show cube, lane, block and prism;
+    //      then it moves in on the prism and orbits continuously, slowing a little as each word faces it ----
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 400);
     const VIEW_H = ROWS + 4.5;
+    let aspect = 1;
     const resize = () => {
       const w = canvas.clientWidth, h = canvas.clientHeight;
       renderer.setSize(w, h, false);
-      const halfW = (VIEW_H * (w / h)) / 2;
+      aspect = w / h;
+      const halfW = (VIEW_H * aspect) / 2;
       Object.assign(camera, { left: -halfW, right: halfW, top: VIEW_H / 2, bottom: -VIEW_H / 2 });
       camera.updateProjectionMatrix();
     };
@@ -209,27 +360,46 @@ for (const { x, y } of cells) {
     host.parentElement?.addEventListener('click', (e) => { if (moved > 4) e.preventDefault(); });
 
     const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    let assembleStart = still ? -100 : 0; // seconds; voxels converge over ~2.6 s from here
+    let introStart: number | null = still ? -1000 : null; // seconds; set on the first frame
     let clock = 0;
-    canvas.addEventListener('pointerenter', () => { if (!still && clock - assembleStart > 3.5) assembleStart = clock; });
+    canvas.addEventListener('pointerenter', () => {
+      if (!still && introStart !== null && clock - introStart > introEnd + PAN + 0.5) introStart = clock;
+    });
 
     const ease = (x: number) => 1 - Math.pow(1 - Math.min(1, Math.max(0, x)), 3);
-    const target = new THREE.Vector3(0, ROWS / 2 + 0.6, 0);
+    const smooth = (x: number) => { const k = Math.min(1, Math.max(0, x)); return k * k * (3 - 2 * k); };
+    const target = new THREE.Vector3();
     const frame = (ms: number) => {
       clock = ms / 1000;
-      const theta = still ? 0.35 : clock * 0.55;
+      introStart ??= clock;
+      const tA = clock - introStart;
+      const pan = smooth((tA - introEnd) / PAN); // 0 during the intro, 1 once the camera has moved in
+
+      // Camera: zoom and target blend from the intro view to the prism
+      const introZoom = Math.max(1, (viewR - viewL) / (VIEW_H * aspect));
+      camera.zoom = 1 / (introZoom + (1 - introZoom) * pan);
+      camera.updateProjectionMatrix();
+      target.set(((viewL + viewR) / 2) * (1 - pan), (LANE_Y + 0.6) * (1 - pan) + (ROWS / 2 + 0.6) * pan, 0);
+      const theta = still ? 0.35 : Math.max(0, tA - introEnd - PAN * 0.4) * 0.55;
       const a = theta - Math.sin(words.length * theta) / (words.length * 1.25) + drag;
       if (!dragging) drag *= 0.97;
-      camera.position.set(Math.sin(a) * 60, 22, Math.cos(a) * 60);
+      camera.position.set(target.x + Math.sin(a) * 60, target.y + 18, Math.cos(a) * 60);
       camera.lookAt(target);
 
-      const tA = clock - assembleStart;
-      uT.value = tA;
+      // Intro: the cube turns slowly while it waits, the net fires while tokens pass through the block
+      U.uT.value = tA;
+      U.uCubeRot.value = still ? 0 : 0.5 * Math.sin(Math.min(tA, T_HOLD + UNSPOOL) * 0.9);
+      const busy = tA > machOn && tA < machOff ? 1 : 0;
+      if (pan < 1) drawNet(busy ? ((tA - machOn) * 1.4) % 1 : 0, busy);
+      faceMat.opacity = 1 - pan;
+      machine.visible = pan < 1;
+      if (ghostMesh) ghostMesh.visible = tA < machOff + 1;
+
       for (const f of meshes) {
         const facing = f.n.x * Math.sin(a) + f.n.z * Math.cos(a); // 1 = facing the camera
         const vis = Math.min(1, Math.max(0, (facing + 0.1) / 0.7));
-        f.mat.opacity = 0.12 + 0.88 * vis;
-        f.labelOpacity.value = 0.85 * vis * vis * ease((tA - 2.4) / 0.8);
+        f.mat.opacity = 1 + (0.12 + 0.88 * vis - 1) * pan; // all opaque while they travel
+        f.labelOpacity.value = 0.85 * vis * vis * ease((tA - introEnd - 0.4) / 0.8);
       }
       renderer.render(scene, camera);
       requestAnimationFrame(frame);
