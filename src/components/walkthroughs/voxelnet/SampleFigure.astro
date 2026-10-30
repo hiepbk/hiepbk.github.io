@@ -1,0 +1,292 @@
+---
+// From grouped voxels to the VFE input, on a real 6 × 5 voxel patch of the scan (0.2 m voxels, the 0.4 m layer at
+// 2.2–2.6 m, seen from the top). Beat 1: grouping — every point lands in its voxel, counts from 0 to 39. Beat 2: only
+// the K non-empty voxels are kept, one buffer row each. Beat 3: sample — at most T = 35 points per voxel (the voxel
+// with 39 drops 4 at random), shorter rows are padded with zeros: K × 35 × 4. Beat 4: augment — each point gets its
+// offset to the centroid of its voxel's points: K × 35 × 7. The scan stores no reflectance, so r is left symbolic.
+import { loadScene, rng } from '../../../lib/walkthroughFiguresA';
+
+const V = 0.2, VZ = 0.4, NX = 6, NY = 5, IX0 = -41, IY0 = 54, IZ = 8, ZL = -1; // voxel indices of the patch
+const X0 = IX0 * V, Y0 = IY0 * V, Z0 = ZL + IZ * VZ, T = 35;
+const pts = loadScene().points.filter((p) => p.x >= X0 && p.x < X0 + NX * V && p.y >= Y0 && p.y < Y0 + NY * V && p.z >= Z0 && p.z < Z0 + VZ);
+const cellOf = (p: { x: number; y: number }) => Math.floor((p.x - X0) / V) * NY + Math.floor((p.y - Y0) / V);
+// Random sample: in an over-full voxel, drop all but T points (fixed seed)
+const rand = rng(9);
+const byCell = new Map<number, number[]>();
+pts.forEach((p, i) => byCell.set(cellOf(p), [...(byCell.get(cellOf(p)) ?? []), i]));
+const dropped = new Set<number>();
+for (const ids of byCell.values()) {
+  const order = ids.map((i) => [rand(), i]).sort((a, b) => a[0] - b[0]).map((e) => e[1]);
+  order.slice(T).forEach((i) => dropped.add(i));
+}
+const data = {
+  nx: NX, ny: NY, v: V, t: T,
+  pts: pts.map((p, i) => [cellOf(p), Math.round((p.x - X0) * 100), Math.round((p.y - Y0) * 100), Math.round(p.z * 100), dropped.has(i) ? 1 : 0]),
+};
+---
+<canvas class="wt-canvas sample-canvas" data-smp={JSON.stringify(data)}
+  role="img" aria-label="A small patch of voxels seen from the top: grouping puts every point in its voxel; only the non-empty voxels are kept, one row each; sampling keeps at most 35 points per voxel and pads shorter rows with zeros; each point then gets its offset to its voxel's centroid, giving a K by 35 by 7 tensor"></canvas>
+
+<style>
+  canvas.wt-canvas.sample-canvas { height: 400px; }
+  @media (max-width: 600px) { canvas.wt-canvas.sample-canvas { height: 360px; } }
+</style>
+
+<script>
+  import { FIGURE_SPEED } from '../../../lib/figureClock';
+  type Smp = { nx: number; ny: number; v: number; t: number; pts: [number, number, number, number, number][] };
+
+  const HEADLINE = [
+    'Grouping: every point lands in the voxel that contains it',
+    'Keep only the K non-empty voxels — one row each, empty voxels are skipped',
+    'Sample: at most T = 35 points per voxel, shorter rows padded with zeros',
+    "Augment: each point gets its offset to its voxel's centroid → 7 numbers",
+  ];
+  const HEADLINE_SHORT = ['Grouping: point → its voxel', 'Keep the K non-empty voxels', 'Sample ≤ 35 points, pad zeros', 'Augment: + centroid offsets → 7-D'];
+
+  document.querySelectorAll<HTMLCanvasElement>('.sample-canvas').forEach((canvas) => {
+    const d: Smp = JSON.parse(canvas.dataset.smp!);
+    const ctx = canvas.getContext('2d')!;
+    const NC = d.nx * d.ny, T = d.t;
+    const count = new Array(NC).fill(0);
+    d.pts.forEach((p) => count[p[0]]++);
+    // Non-empty voxels in scan order = buffer rows
+    const cells = count.map((n, c) => (n ? c : -1)).filter((c) => c >= 0);
+    const K = cells.length;
+    // Centroid of the kept points of every voxel (metres within the patch, z in metres)
+    const cen = new Map<number, [number, number, number]>();
+    for (const c of cells) {
+      const kept = d.pts.filter((p) => p[0] === c && !p[4]);
+      cen.set(c, [0, 1, 2].map((k) => kept.reduce((s, p) => s + p[k + 1], 0) / kept.length / 100) as [number, number, number]);
+    }
+    const big = cells.reduce((a, c) => (count[c] > count[a] ? c : a), cells[0]);
+    const sample = d.pts.find((p) => p[0] === big && !p[4])!;
+
+    const T0 = { group: 0, keep: 5, sample: 10.5, aug: 16.5, end: 24 };
+    const BEATS = [T0.group, T0.keep, T0.sample, T0.aug];
+    const ramp = (t: number, a: number, b: number) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+    const ease = (x: number) => x * x * (3 - 2 * x);
+
+    let W = 0, H = 0;
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    function frame(time: number) {
+      const t = time % T0.end;
+      const css = getComputedStyle(document.documentElement);
+      const text = css.getPropertyValue('--muted').trim() || '#555';
+      const faint = css.getPropertyValue('--faint').trim() || '#999';
+      const heading = css.getPropertyValue('--heading').trim() || '#34496f';
+      const accent = css.getPropertyValue('--accent-2').trim() || '#7c3aed';
+      const dark = css.getPropertyValue('color-scheme').includes('dark');
+      const red = dark ? '#ff6b6b' : '#dc2626';
+      const teal = dark ? '#2dd4bf' : '#0d9488';
+      const ink = dark ? '#8fb3ff' : '#1e3a8a';
+      ctx.clearRect(0, 0, W, H);
+
+      const beat = t < T0.keep ? 0 : t < T0.sample ? 1 : t < T0.aug ? 2 : 3;
+      const narrow = W < 520;
+      const fadeAll = 1 - ramp(t, T0.end - 0.5, T0.end);
+      const grid = ease(ramp(t, 1.2, 2.6));
+      const keep = ease(ramp(t, T0.keep + 0.3, T0.keep + 1.3));
+      const drop = ease(ramp(t, T0.sample + 0.4, T0.sample + 1.6));
+      const pad = ease(ramp(t, T0.sample + 1.8, T0.sample + 3.6));
+      const aug = ease(ramp(t, T0.aug + 0.3, T0.aug + 1.8));
+
+      ctx.globalAlpha = fadeAll * ease(ramp(t, BEATS[beat] + 0.05, BEATS[beat] + 0.45));
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 15}px Sora, sans-serif`;
+      ctx.fillStyle = red;
+      ctx.fillText((narrow ? HEADLINE_SHORT : HEADLINE)[beat], W / 2, 16, W - 8);
+
+      // Left: the patch (x forward = up, y left). Right: the buffer, K rows × T slots, and the 4 → 7 detail below.
+      const side = narrow ? 6 : 20, top = 84;
+      const detailH = narrow ? 52 : 58;
+      const cs = Math.min(narrow ? (W * 0.38) / d.ny : (W * 0.34) / d.ny, (H - top - 30) / d.nx);
+      const gx = side, gy = top, gw = cs * d.ny, gh = cs * d.nx;
+      const S = cs / d.v; // px per metre
+      const cellXY = (c: number) => { const i = Math.floor(c / d.ny), j = c % d.ny; return [gx + gw - (j + 1) * cs, gy + gh - (i + 1) * cs] as const; };
+      const ptXY = (p: number[]) => [gx + gw - (p[2] / 100) * S, gy + gh - (p[1] / 100) * S] as const;
+
+      ctx.globalAlpha = fadeAll;
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      ctx.fillText(narrow ? 'Voxels (top view)' : 'Voxels, seen from the top', gx + gw / 2, 46, gw + 30);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = beat === 0 ? text : accent;
+      ctx.fillText(beat === 0 ? `${d.pts.length} points, ${NC} voxels` : `${K} non-empty of ${NC}`, gx + gw / 2, 64, gw + 30);
+
+      // Cells: non-empty ones tinted, empty ones fade when skipped
+      for (let c = 0; c < NC; c++) {
+        const [x, y] = cellXY(c);
+        if (count[c]) {
+          ctx.globalAlpha = fadeAll * grid * (0.12 + 0.18 * keep);
+          ctx.fillStyle = accent; ctx.fillRect(x, y, cs, cs);
+        } else if (keep > 0.01) {
+          ctx.globalAlpha = fadeAll * keep * 0.5;
+          ctx.strokeStyle = faint; ctx.lineWidth = 0.8;
+          ctx.beginPath(); ctx.moveTo(x + cs * 0.3, y + cs * 0.3); ctx.lineTo(x + cs * 0.7, y + cs * 0.7); ctx.moveTo(x + cs * 0.7, y + cs * 0.3); ctx.lineTo(x + cs * 0.3, y + cs * 0.7); ctx.stroke();
+        }
+      }
+      ctx.globalAlpha = fadeAll * grid;
+      ctx.strokeStyle = faint; ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      for (let i = 0; i <= d.nx; i++) { ctx.moveTo(gx, gy + i * cs); ctx.lineTo(gx + gw, gy + i * cs); }
+      for (let j = 0; j <= d.ny; j++) { ctx.moveTo(gx + j * cs, gy); ctx.lineTo(gx + j * cs, gy + gh); }
+      ctx.stroke();
+      // Points; the randomly dropped ones turn red and fade in beat 3
+      for (const p of d.pts) {
+        const [x, y] = ptXY(p);
+        const a = Math.min(1, ramp(t, 0.1 + (p[1] % 37) * 0.012, 0.6 + (p[1] % 37) * 0.012));
+        ctx.globalAlpha = fadeAll * a * (p[4] ? 1 - 0.8 * ramp(t, T0.sample + 1.2, T0.sample + 2.2) : 1);
+        ctx.fillStyle = p[4] && drop > 0.01 ? red : ink;
+        ctx.beginPath(); ctx.arc(x, y, narrow ? 1.6 : 2, 0, Math.PI * 2); ctx.fill();
+      }
+      // Counts in the corner of every non-empty voxel
+      ctx.globalAlpha = fadeAll * grid;
+      ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+      ctx.textAlign = 'right';
+      for (const c of cells) {
+        const [x, y] = cellXY(c);
+        const n = count[c] - (drop > 0.5 && count[c] > T ? count[c] - T : 0);
+        ctx.fillStyle = count[c] > T ? red : heading;
+        ctx.fillText(String(n), x + cs - 3, y + (narrow ? 10 : 12));
+      }
+      // Centroid of the busiest voxel, with lines to its points
+      if (aug > 0.01) {
+        const cc = cen.get(big)!;
+        const cx = gx + gw - cc[1] * S, cy = gy + gh - cc[0] * S;
+        ctx.globalAlpha = fadeAll * aug * 0.7;
+        ctx.strokeStyle = teal; ctx.lineWidth = 0.7;
+        ctx.beginPath();
+        for (const p of d.pts) if (p[0] === big && !p[4]) { const [x, y] = ptXY(p); ctx.moveTo(cx, cy); ctx.lineTo(x, y); }
+        ctx.stroke();
+        ctx.globalAlpha = fadeAll * aug;
+        ctx.strokeStyle = teal; ctx.lineWidth = 2.2;
+        ctx.beginPath(); ctx.moveTo(cx - 5, cy - 5); ctx.lineTo(cx + 5, cy + 5); ctx.moveTo(cx + 5, cy - 5); ctx.lineTo(cx - 5, cy + 5); ctx.stroke();
+      }
+
+      // Buffer
+      const bx = gx + gw + (narrow ? 14 : 44), bw = W - bx - side - (narrow ? 20 : 26); // room for the overflow tag
+      const btop = top + 6, bH = H - btop - detailH - 18;
+      const rh = Math.min(16, bH / K), sw = bw / T;
+      ctx.globalAlpha = fadeAll * keep;
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${narrow ? 12 : 14}px Sora, sans-serif`;
+      ctx.fillStyle = heading;
+      const shape = beat < 2 ? `K = ${K} rows` : beat === 2 ? `K × ${T} × 4  (K = ${K})` : `K × ${T} × 7  (K = ${K})`;
+      ctx.fillText(shape, bx + bw / 2, 46, bw);
+      ctx.font = `500 ${narrow ? 10 : 12}px "IBM Plex Sans", sans-serif`;
+      ctx.fillStyle = accent;
+      ctx.fillText(beat < 2 ? 'one row per non-empty voxel' : beat === 2 ? `${T} slots per row: points, then zeros` : 'each slot: x, y, z, r + 3 offsets', bx + bw / 2, 64, bw);
+
+      cells.forEach((c, r) => {
+        const ry = btop + r * rh;
+        const n = Math.min(count[c], T), over = Math.max(0, count[c] - T);
+        const arrive = ease(ramp(t, T0.keep + 0.4 + r * 0.25, T0.keep + 1.0 + r * 0.25));
+        if (arrive < 0.01) return;
+        // A token flying from the voxel to its row
+        if (arrive < 0.99) {
+          const [x, y] = cellXY(c);
+          ctx.globalAlpha = fadeAll;
+          ctx.fillStyle = accent;
+          ctx.fillRect(x + cs / 2 + (bx - x - cs / 2) * arrive - 3, y + cs / 2 + (ry + rh / 2 - y - cs / 2) * arrive - 3, 6, 6);
+          return;
+        }
+        for (let s = 0; s < T; s++) {
+          const x = bx + s * sw;
+          if (s < n) {
+            ctx.globalAlpha = fadeAll;
+            ctx.fillStyle = accent;
+            ctx.fillRect(x + 0.5, ry + 0.5, sw - 1, rh - 1.5);
+            if (aug > 0.01) { // the 3 offsets: lower part of the slot
+              ctx.globalAlpha = fadeAll * aug;
+              ctx.fillStyle = teal;
+              ctx.fillRect(x + 0.5, ry + 0.5 + (rh - 1.5) * (4 / 7), sw - 1, (rh - 1.5) * (3 / 7));
+            }
+          } else if (pad > 0.01) {
+            const a = ramp(pad * T, s - n, s - n + 1);
+            ctx.globalAlpha = fadeAll * a * 0.8;
+            ctx.fillStyle = dark ? 'rgba(148,163,184,0.25)' : 'rgba(30,58,138,0.10)';
+            ctx.fillRect(x + 0.5, ry + 0.5, sw - 1, rh - 1.5);
+            if (sw >= 9 && rh >= 11) {
+              ctx.fillStyle = faint; ctx.font = `500 ${Math.min(9, rh - 4)}px "IBM Plex Mono", monospace`;
+              ctx.fillText('0', x + sw / 2, ry + rh - 4);
+            }
+          } else {
+            ctx.globalAlpha = fadeAll * 0.4;
+            ctx.strokeStyle = faint; ctx.lineWidth = 0.5;
+            ctx.strokeRect(x + 0.5, ry + 0.5, sw - 1, rh - 1.5);
+          }
+        }
+        // Over-full voxel: extra points beyond T, dropped at random in beat 3
+        if (over) {
+          ctx.globalAlpha = fadeAll * (1 - 0.6 * drop);
+          ctx.fillStyle = red; ctx.textAlign = 'left';
+          ctx.font = `600 ${narrow ? 9 : 11}px "IBM Plex Mono", monospace`;
+          ctx.fillText(drop > 0.5 ? `−${over}` : `+${over}`, bx + bw + 3, ry + rh - 3);
+        }
+      });
+      // T boundary
+      ctx.globalAlpha = fadeAll * keep * 0.8;
+      ctx.strokeStyle = red; ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(bx + bw, btop - 4); ctx.lineTo(bx + bw, btop + K * rh + 2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = red; ctx.textAlign = 'right';
+      ctx.font = `500 ${narrow ? 9 : 10}px "IBM Plex Mono", monospace`;
+      ctx.fillText(`T = ${T}`, bx + bw, btop + K * rh + 14);
+
+      // Detail: one real point of the busiest voxel, 4 numbers → 7 numbers
+      if (beat >= 2) {
+        const dy = H - detailH + 4;
+        const cc = cen.get(big)!;
+        const xm = sample[1] / 100, ym = sample[2] / 100, zm = sample[3] / 100;
+        const four = [xm, ym, zm].map((v) => v.toFixed(2));
+        const offs = [xm - cc[0], ym - cc[1], zm - cc[2]].map((v) => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(2));
+        ctx.globalAlpha = fadeAll;
+        ctx.textAlign = 'left';
+        ctx.font = `500 ${narrow ? 9 : 11}px "IBM Plex Sans", sans-serif`;
+        ctx.fillStyle = text;
+        ctx.fillText(narrow ? 'one point (patch frame, m):' : 'one point of the busiest voxel (patch frame, metres):', bx, dy);
+        ctx.font = `600 ${narrow ? 10 : 12}px "IBM Plex Mono", monospace`;
+        let x = bx;
+        const put = (s: string, col: string) => { ctx.fillStyle = col; ctx.fillText(s, x, dy + (narrow ? 18 : 22)); x += ctx.measureText(s).width; };
+        put('[', heading);
+        [...four, 'r'].forEach((v, k) => put(v + (k < 3 || aug > 0.01 ? ', ' : ''), accent));
+        if (aug > 0.01) {
+          ctx.globalAlpha = fadeAll * aug;
+          offs.forEach((v, k) => put(v + (k < 2 ? ', ' : ''), teal));
+          ctx.globalAlpha = fadeAll;
+        }
+        put(']', heading);
+        if (aug > 0.01 && !narrow) {
+          ctx.globalAlpha = fadeAll * aug;
+          ctx.font = `500 10px "IBM Plex Sans", sans-serif`;
+          ctx.fillStyle = teal;
+          ctx.fillText('x − vₓ, y − v_y, z − v_z: offset to the voxel centroid', bx, dy + 40);
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    window.addEventListener('resize', () => { resize(); if (still) frame(T0.end - 1.5); });
+    if (still) { frame(T0.end - 1.5); return; }
+    let visible = false, raf: number | null = null, t0: number | null = null;
+    const loop = (ms: number) => {
+      t0 ??= ms;
+      frame(((ms - t0) / 1000) * FIGURE_SPEED);
+      raf = visible ? requestAnimationFrame(loop) : null;
+    };
+    new IntersectionObserver((entries) => {
+      visible = entries[0].isIntersecting;
+      if (visible && raf === null) raf = requestAnimationFrame(loop);
+    }).observe(canvas);
+  });
+</script>

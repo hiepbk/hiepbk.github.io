@@ -32,7 +32,7 @@
       "row": 0,
       "step": 1,
       "kind": "voxels",
-      "label": "Grouping",
+      "label": "Grouping (voxelization)",
       "sub": "10×400×352"
     },
     {
@@ -41,7 +41,7 @@
       "row": 0,
       "step": 2,
       "kind": "vector",
-      "label": "Point input",
+      "label": "Sample (non-empty)",
       "sub": "K×35×7"
     },
     {
@@ -232,15 +232,15 @@
       "shape": "~100k × 4 (x, y, z, r)"
     },
     {
-      "say": "Grouping: partition space into 0.4 × 0.2 × 0.2 m voxels",
-      "short": "Grouping into voxels",
-      "row": "Grouping",
+      "say": "Grouping (voxelization): each point goes to the 0.4 × 0.2 × 0.2 m voxel that contains it",
+      "short": "Voxelization",
+      "row": "Grouping (voxelization)",
       "shape": "voxel grid 10 × 400 × 352"
     },
     {
-      "say": "Point input: ≤ T = 35 random points per voxel, plus centroid offsets",
-      "short": "Point input: ≤ 35 points, 7-D",
-      "row": "Point input",
+      "say": "Sample: K non-empty voxels, ≤ 35 random points each, + centroid offsets → 7-D",
+      "short": "K voxels × 35 points × 7",
+      "row": "Sample (non-empty)",
       "shape": "K × 35 × 7"
     },
     {
@@ -270,19 +270,19 @@
     {
       "say": "Conv3D, stride 2 along z: depth 10 → 5",
       "short": "Conv3D: depth 10 → 5",
-      "row": "Conv3D(128, 64, 3, (2,1,1), (1,1,1))",
+      "row": "Conv3D(128, 64)",
       "shape": "64 × 5 × 400 × 352"
     },
     {
       "say": "Conv3D, no padding along z: depth 5 → 3",
       "short": "Conv3D: depth 5 → 3",
-      "row": "Conv3D(64, 64, 3, (1,1,1), (0,1,1))",
+      "row": "Conv3D(64, 64)",
       "shape": "64 × 3 × 400 × 352"
     },
     {
       "say": "Conv3D, stride 2 along z: depth 3 → 2",
       "short": "Conv3D: depth 3 → 2",
-      "row": "Conv3D(64, 64, 3, (2,1,1), (1,1,1))",
+      "row": "Conv3D(64, 64)",
       "shape": "64 × 2 × 400 × 352"
     },
     {

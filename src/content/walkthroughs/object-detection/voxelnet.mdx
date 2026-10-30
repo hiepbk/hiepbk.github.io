@@ -4,7 +4,7 @@ category: object-detection
 order: 3
 summary: "VoxelNet replaced hand-crafted bird's-eye-view features with a small PointNet run inside each voxel, followed by 3D convolutions and an RPN — the first end-to-end LiDAR detector and the template for every voxel-based method after it."
 date: 2026-10-30
-draft: true
+draft: false
 paper:
   title: "VoxelNet: End-to-End Learning for Point Cloud Based 3D Object Detection"
   authors: "Yin Zhou, Oncel Tuzel"
@@ -23,6 +23,7 @@ import HandcraftedFigure from '../../../components/walkthroughs/voxelnet/Handcra
 import PointNetScaleFigure from '../../../components/walkthroughs/voxelnet/PointNetScaleFigure.astro';
 import DensityFigure from '../../../components/walkthroughs/voxelnet/DensityFigure.astro';
 import SparseDenseFigure from '../../../components/walkthroughs/voxelnet/SparseDenseFigure.astro';
+import SampleFigure from '../../../components/walkthroughs/voxelnet/SampleFigure.astro';
 
 ## Motivation & Main Contribution
 
@@ -127,23 +128,35 @@ $$
 Range $[-3, 1] \times [-40, 40] \times [0, 70.4]$ m along $Z, Y, X$; voxel size $0.4 \times 0.2 \times 0.2$ m;
 $T = 35$ points per voxel (Section 3.1):
 
-| Stage | Operation | Shape |
+| Stage | Operation → purpose | Shape |
 |---|---|---|
-| Input | points inside the camera view | ~100k $\times$ 4 $(x, y, z, r)$ |
-| Grouping | voxel grid $D' \times H' \times W'$ | $10 \times 400 \times 352$ cells |
-| Point input | random sample ≤ $T$ points per voxel, add centroid offsets | $K \times 35 \times 7$ |
-| VFE-1(7, 32) | Linear $7 \to 16$, max, concat | $K \times 35 \times 32$ |
-| VFE-2(32, 128) | Linear $32 \to 64$, max, concat | $K \times 35 \times 128$ |
-| FCN + max | Linear to 128, max over points | $K \times 128$ |
-| Scatter | sparse 4D tensor | $128 \times 10 \times 400 \times 352$ |
-| Conv3D(128, 64, 3, (2,1,1), (1,1,1)) | | $64 \times 5 \times 400 \times 352$ |
-| Conv3D(64, 64, 3, (1,1,1), (0,1,1)) | | $64 \times 3 \times 400 \times 352$ |
-| Conv3D(64, 64, 3, (2,1,1), (1,1,1)) | | $64 \times 2 \times 400 \times 352$ |
-| Reshape | merge height into channels | $128 \times 400 \times 352$ |
-| RPN (3 blocks + deconv, concat) | see below | $768 \times 200 \times 176$ |
-| Heads | $1 \times 1$ convs | scores $2 \times 200 \times 176$, regression $14 \times 200 \times 176$ |
+| Input | points inside the camera view → *the raw measurement; KITTI labels objects only there* | ~100k $\times$ 4 $(x, y, z, r)$ |
+| Grouping (voxelization) | each point goes to the voxel that contains it, grid $D' \times H' \times W'$ → *give the unordered points a fixed spatial structure* | $10 \times 400 \times 352$ cells |
+| Sample (non-empty) | keep only the $K$ non-empty voxels, ≤ $T$ random points each (zero-padded), add each point's offset to the voxel centroid → *a fixed-size tensor, empty space skipped, cost capped* | $K \times 35 \times 7$ |
+| VFE-1(7, 32) | Linear $7 \to 16$, max, concat → *point features that also know the other points of their voxel* | $K \times 35 \times 32$ |
+| VFE-2(32, 128) | Linear $32 \to 64$, max, concat → *the same, stacked: richer point features* | $K \times 35 \times 128$ |
+| FCN + max | Linear to 128, max over points → *one vector per voxel, independent of point order* | $K \times 128$ |
+| Scatter | each voxel vector back at its grid position, sparse 4D tensor → *neighbours in space become neighbours in the tensor* | $128 \times 10 \times 400 \times 352$ |
+| Conv3D(128, 64) | $3 \times 3 \times 3$, stride (2, 1, 1), padding (1, 1, 1) → *mix neighbouring voxels in 3D; height 10 → 5* | $64 \times 5 \times 400 \times 352$ |
+| Conv3D(64, 64) | $3 \times 3 \times 3$, stride (1, 1, 1), padding (0, 1, 1) → *wider 3D context; height 5 → 3* | $64 \times 3 \times 400 \times 352$ |
+| Conv3D(64, 64) | $3 \times 3 \times 3$, stride (2, 1, 1), padding (1, 1, 1) → *wider 3D context; height 3 → 2* | $64 \times 2 \times 400 \times 352$ |
+| Reshape | merge height into channels → *a 2D bird's-eye-view map, so cheap 2D convolutions can take over* | $128 \times 400 \times 352$ |
+| RPN (3 blocks + deconv, concat) | see below → *downsampled blocks see far, upsampling + concat keeps detail: objects of every size* | $768 \times 200 \times 176$ |
+| Heads | $1 \times 1$ convs → *per location and anchor (2 orientations): car or not, and the 7 residuals that fit the anchor to the box* | scores $2 \times 200 \times 176$<br />regression $14 \times 200 \times 176$ |
 
 $K$: number of non-empty voxels. Intermediate depths 5 and 3 follow from the stated strides and paddings.
+
+The step from *Grouping* to *Sample* is where the irregular point cloud becomes a regular tensor: every non-empty
+voxel gets exactly $T$ slots, whatever its number of points.
+
+<Figure>
+  <SampleFigure />
+  <span slot="caption">From grouped voxels to the VFE input, on a real $6 \times 5$ voxel patch of the scan (0.2 m
+  voxels, one 0.4 m height layer, seen from the top). Only the $K = 12$ non-empty voxels get a row. The busiest voxel
+  (39 points) keeps a random 35; shorter rows are padded with zeros. Each kept point $(x, y, z, r)$ then gets its offset to the
+  centroid of its voxel's points (the × in the busiest voxel), giving 7 numbers. The stored scan has no reflectance, so
+  $r$ is left symbolic.</span>
+</Figure>
 
 ### Stacked VFE: PointNet, made local
 

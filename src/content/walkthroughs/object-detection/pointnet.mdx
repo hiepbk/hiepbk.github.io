@@ -4,7 +4,7 @@ category: object-detection
 order: 1
 summary: "How do you feed an unordered set of 3D points to a neural network? PointNet's answer — a shared MLP and a max pool — became the building block inside almost every LiDAR detector that followed."
 date: 2026-10-30
-draft: true
+draft: false
 paper:
   title: "PointNet: Deep Learning on Point Sets for 3D Classification and Segmentation · PointNet++: Deep Hierarchical Feature Learning on Point Sets in a Metric Space"
   authors: "Charles R. Qi, Hao Su, Kaichun Mo, Leonidas J. Guibas · Charles R. Qi, Li Yi, Hao Su, Leonidas J. Guibas"
@@ -128,15 +128,15 @@ Tensor shapes for one object with $n$ points (classification network, Fig. 2 of 
   <span slot="caption">The whole PointNet (after Fig. 2 of the paper), run on the car stage by stage; each step lights one block and is tagged with its row of the table below. Classification: $n \times 3$ points → input transform (T-Net, $3 \times 3$) → shared MLP (64, 64) → feature transform (T-Net, $64 \times 64$) → shared MLP (64, 128, 1024) → max pool → $1 \times 1024$ global feature → MLP (512, 256, $k$) → $k$ class scores. Segmentation: each point's 64-d local feature plus the global feature ($n \times 1088$) → shared MLPs (512, 256, 128) and (128, $m$) → $n \times m$ scores. Feature values and part labels are illustrative; $n \times C$ blocks show 16 of the $n$ rows and a few of the $C$ columns.</span>
 </Figure>
 
-| Stage | Operation | Shape |
+| Stage | Operation → purpose | Shape |
 |---|---|---|
-| Input | raw coordinates | $n \times 3$ |
-| Input transform | T-Net predicts a $3 \times 3$ matrix, multiply | $n \times 3$ |
-| Shared MLP (64, 64) | same MLP on every point | $n \times 64$ |
-| Feature transform | T-Net predicts a $64 \times 64$ matrix, multiply | $n \times 64$ |
-| Shared MLP (64, 128, 1024) | same MLP on every point | $n \times 1024$ |
-| Max pool | over the $n$ points | $1 \times 1024$ (global feature) |
-| MLP (512, 256, $k$) | classifier, dropout (keep ratio 0.7) | $k$ class scores |
+| Input | raw coordinates → *the point set as it comes, in any order* | $n \times 3$ |
+| Input transform | T-Net predicts a $3 \times 3$ matrix, multiply → *align the cloud to a canonical pose* | $n \times 3$ |
+| Shared MLP (64, 64) | same MLP on every point → *lift each point to a 64-d feature* | $n \times 64$ |
+| Feature transform | T-Net predicts a $64 \times 64$ matrix, multiply → *align the features too* | $n \times 64$ |
+| Shared MLP (64, 128, 1024) | same MLP on every point → *rich 1024-d features per point* | $n \times 1024$ |
+| Max pool | over the $n$ points → *one global feature, independent of the point order* | $1 \times 1024$ (global feature) |
+| MLP (512, 256, $k$) | classifier, dropout (keep ratio 0.7) → *map the global feature to class scores* | $k$ class scores |
 
 ### T-Net: learning to align the input
 

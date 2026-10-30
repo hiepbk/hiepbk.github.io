@@ -4,7 +4,7 @@ category: object-detection
 order: 7
 summary: "Voxels or points? PV-RCNN stops choosing: a SECOND-style sparse voxel CNN finds the proposals, a small set of keypoints summarises its features with PointNet++ set abstraction, and a grid of points inside each box pulls them back for refinement."
 date: 2026-10-30
-draft: true
+draft: false
 paper:
   title: "PV-RCNN: Point-Voxel Feature Set Abstraction for 3D Object Detection"
   authors: "Shaoshuai Shi, Chaoxu Guo, Li Jiang, Zhe Wang, Jianping Shi, Xiaogang Wang, Hongsheng Li"
@@ -108,18 +108,18 @@ $$
 
 ### Tensor shapes (KITTI)
 
-| Stage | Operation | Shape |
+| Stage | Operation → purpose | Shape |
 |---|---|---|
-| Input range | X $[0, 70.4]$ m, Y $[-40, 40]$ m, Z $[-3, 1]$ m | raw points |
-| Voxel grid | voxel size $(0.05, 0.05, 0.1)$ m | $1408 \times 1600 \times 40$ (range ÷ voxel size) |
-| Sparse CNN levels 1–4 | $1\times, 2\times, 4\times, 8\times$ downsampled | 16, 32, 64, 64 channels |
-| Proposals | BEV anchor RPN, NMS IoU 0.7 | top 100 at test |
-| Keypoints | FPS on raw points | $n = 2048$ (Waymo: 4096) |
-| VSA radii per level | two radii each | (0.4, 0.8), (0.8, 1.2), (1.2, 2.4), (2.4, 4.8) m; raw points (0.4, 0.8) m |
-| Keypoint weighting | 3-layer MLP + sigmoid, feature × score | $n \times C$ (same as VSA output) |
-| RoI-grid pooling | per proposal | $6 \times 6 \times 6 = 216$ grid points, radii (0.8, 1.6) m |
-| RoI feature | flatten grid features, 2-layer MLP | 256-d per proposal |
-| Heads | IoU-guided confidence + box residual | one score and one box per proposal |
+| Input range | X $[0, 70.4]$ m, Y $[-40, 40]$ m, Z $[-3, 1]$ m → *the region that is voxelized* | raw points |
+| Voxel grid | voxel size $(0.05, 0.05, 0.1)$ m → *fine voxels for the sparse CNN* | $1408 \times 1600 \times 40$ (range ÷ voxel size) |
+| Sparse CNN levels 1–4 | 3D sparse convs, $1\times, 2\times, 4\times, 8\times$ downsampled → *efficient multi-scale 3D features* | 16, 32, 64, 64 channels |
+| Proposals | BEV anchor RPN, NMS IoU 0.7 → *high-recall boxes from the voxel branch* | top 100 at test |
+| Keypoints | FPS on raw points → *a few thousand well-spread points that summarise the scene* | $n = 2048$ (Waymo: 4096) |
+| VSA radii per level | two radii each → *every keypoint gathers multi-scale voxel features around it* | (0.4, 0.8), (0.8, 1.2), (1.2, 2.4), (2.4, 4.8) m; raw points (0.4, 0.8) m |
+| Keypoint weighting | 3-layer MLP + sigmoid, feature × score → *favour keypoints on objects over background* | $n \times C$ (same as VSA output) |
+| RoI-grid pooling | per proposal, each grid point pools the nearby keypoints → *box features with exact positions inside the box* | $6 \times 6 \times 6 = 216$ grid points, radii (0.8, 1.6) m |
+| RoI feature | flatten grid features, 2-layer MLP → *one vector per proposal* | 256-d per proposal |
+| Heads | IoU-guided confidence + box residual → *a score that reflects box quality, and a refined box* | one score and one box per proposal |
 
 - Waymo: range $[-75.2, 75.2]$ m in X and Y, $[-2, 4]$ m in Z, voxel size $(0.1, 0.1, 0.15)$ m.
 

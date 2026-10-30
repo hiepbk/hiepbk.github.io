@@ -4,7 +4,7 @@ category: object-detection
 order: 8
 summary: "Anchor boxes never fit a car that is turning. CenterPoint drops them: a heatmap finds object centres in BEV, a few small heads read off size, heading and velocity at each peak, and tracking becomes closest-point matching."
 date: 2026-10-30
-draft: true
+draft: false
 paper:
   title: "Center-based 3D Object Detection and Tracking"
   authors: "Tianwei Yin, Xingyi Zhou, Philipp Krähenbühl"
@@ -117,16 +117,16 @@ $$
 
 The pipeline, stage by stage:
 
-| Stage | Operation | Shape |
+| Stage | Operation → purpose | Shape |
 |---|---|---|
-| Input | LiDAR points (current and previous sweep) | raw points |
-| 3D backbone | VoxelNet-style sparse voxels or PointPillars | map view $M$: $W \times L \times F$ |
-| Shared conv | $3 \times 3$ conv + BN + ReLU | $W \times L \times C$ |
-| Heatmap head | two $3 \times 3$ convs | $W \times L \times K$ |
-| Regression heads | two $3 \times 3$ convs per output | $W \times L \times 10$ (2 + 1 + 3 + 2 + 2) |
-| Peak decode | local maxima, read the maps at each peak | one box per peak |
-| Second stage | 5 bilinear features → MLP | score + refined box per box |
-| Tracking | back-project by $-v$, greedy closest match | tracks |
+| Input | LiDAR points (current and previous sweep) → *the previous sweep gives the motion cue for velocity* | raw points |
+| 3D backbone | VoxelNet-style sparse voxels or PointPillars → *a map-view feature map* | map view $M$: $W \times L \times F$ |
+| Shared conv | $3 \times 3$ conv + BN + ReLU → *common features for all heads* | $W \times L \times C$ |
+| Heatmap head | two $3 \times 3$ convs → *a peak at every object centre, one channel per class* | $W \times L \times K$ |
+| Regression heads | two $3 \times 3$ convs per output → *at each centre: offset, height, size, heading, velocity* | $W \times L \times 10$ (2 + 1 + 3 + 2 + 2) |
+| Peak decode | local maxima, read the maps at each peak → *boxes straight from the peaks, no anchors* | one box per peak |
+| Second stage | 5 bilinear features → MLP → *refine score and box with features from the box's centre and face centres* | score + refined box per box |
+| Tracking | back-project by $-v$, greedy closest match → *link detections across frames with the predicted velocity* | tracks |
 
 The first-stage outputs at each BEV cell:
 

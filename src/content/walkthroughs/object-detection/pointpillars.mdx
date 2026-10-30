@@ -4,7 +4,7 @@ category: object-detection
 order: 5
 summary: "PointPillars makes every voxel as tall as the scene, encodes each pillar with a one-layer PointNet and hands a 2D pseudo-image to a plain 2D CNN — no 3D convolution anywhere, and 3D detection at 62 Hz."
 date: 2026-10-30
-draft: true
+draft: false
 paper:
   title: "PointPillars: Fast Encoders for Object Detection from Point Clouds"
   authors: "Alex H. Lang, Sourabh Vora, Holger Caesar, Lubing Zhou, Jiong Yang, Oscar Beijbom"
@@ -81,18 +81,18 @@ $$
 Range $x \in (0, 70.4)$, $y \in (-40, 40)$, $z \in (-3, 1)$ m; pillar size 0.16 m; at most $P = 12000$ pillars and
 $N = 100$ points per pillar (Section 4.2):
 
-| Stage | Operation | Shape |
+| Stage | Operation → purpose | Shape |
 |---|---|---|
-| Input | points inside the camera view | $n \times 4$ $(x, y, z, r)$ |
-| Pillarize + decorate | group by $(x, y)$ cell, add 5 features, sample or zero-pad | $D \times P \times N = 9 \times 12000 \times 100$ |
-| Linear + BN + ReLU | shared over all points | $64 \times 12000 \times 100$ |
-| Max | over the points of each pillar | $64 \times 12000$ |
-| Scatter | write each pillar to its cell | $64 \times H \times W$ |
-| Block1(S=2, L=4, F=64) | 3×3 convs | $64 \times H/2 \times W/2$ |
-| Block2(4, 6, 128) | | $128 \times H/4 \times W/4$ |
-| Block3(8, 6, 256) | | $256 \times H/8 \times W/8$ |
-| Up1, Up2, Up3 → stride 2 | transposed conv to 128 each, concat | $384 \times H/2 \times W/2$ |
-| SSD head | anchors at $0°$ / $90°$ | class, box (7), direction |
+| Input | points inside the camera view → *the raw measurement* | $n \times 4$ $(x, y, z, r)$ |
+| Pillarize + decorate | group by $(x, y)$ cell, add 5 features, sample or zero-pad → *a dense, fixed-size tensor; no height bins, so no 3D convolutions later* | $D \times P \times N = 9 \times 12000 \times 100$ |
+| Linear + BN + ReLU | shared over all points → *a learned 64-d feature per point (a simplified PointNet)* | $64 \times 12000 \times 100$ |
+| Max | over the points of each pillar → *one feature per pillar, independent of the point order* | $64 \times 12000$ |
+| Scatter | write each pillar to its cell → *a 2D pseudo-image, so a standard 2D CNN can follow* | $64 \times H \times W$ |
+| Block1(S=2, L=4, F=64) | 4 × Conv2D(64, 3), first stride 2 → *fine features* | $64 \times H/2 \times W/2$ |
+| Block2(4, 6, 128) | 6 × Conv2D(128, 3), first stride 2 → *larger receptive field* | $128 \times H/4 \times W/4$ |
+| Block3(8, 6, 256) | 6 × Conv2D(256, 3), first stride 2 → *largest receptive field, scene context* | $256 \times H/8 \times W/8$ |
+| Up1, Up2, Up3 → stride 2 | transposed conv to 128 each, concat → *combine detail and context at one resolution* | $384 \times H/2 \times W/2$ |
+| SSD head | $1 \times 1$ convs on anchors at $0°$ / $90°$ → *per anchor: class, 7 box residuals, direction* | class, box (7), direction |
 
 - From the stated range and pillar size, $H \times W = 500 \times 440$ cells.
 - Pedestrian / cyclist: first block stride $S = 1$ instead of 2; range $x \in (0, 48)$, $y \in (-20, 20)$, $z \in (-2.5, 0.5)$ m.

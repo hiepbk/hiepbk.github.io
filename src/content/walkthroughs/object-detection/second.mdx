@@ -4,7 +4,7 @@ category: object-detection
 order: 4
 summary: "SECOND keeps VoxelNet's design but computes convolutions only where there are points, fixes the angle loss with a sine, and pastes ground-truth objects into training scenes — three changes that made voxel detectors fast and became defaults."
 date: 2026-10-30
-draft: true
+draft: false
 paper:
   title: "SECOND: Sparsely Embedded Convolutional Detection"
   authors: "Yan Yan, Yuxing Mao, Bo Li"
@@ -90,19 +90,19 @@ $$
 Range $[-3, 1] \times [-40, 40] \times [0, 70.4]$ m ($z \times y \times x$), voxel $0.4 \times 0.2 \times 0.2$ m,
 $T = 35$ (Sections 3.1.1 and 3.2.4):
 
-| Stage | Operation | Shape |
+| Stage | Operation → purpose | Shape |
 |---|---|---|
-| Input | points in the detection range | $n \times 4$ $(x, y, z, r)$ |
-| Voxelization | hash-table grouping (as in VoxelNet) | 5k–8k non-empty voxels |
-| VFE(32), VFE(128), Linear(128) | voxel feature extractor | $128$ per voxel |
-| Sparse tensor | | $128 \times 10 \times 400 \times 352$ (sparse) |
-| Sparse middle extractor | 2 phases: submanifold convs + one sparse conv with stride $(2,1,1)$ | $64 \times 2 \times 400 \times 352$ |
-| To dense, reshape | | $128 \times 400 \times 352$ |
-| RPN stage 1 | 3 × Conv2D(128, 3), first stride 2 | $128 \times 200 \times 176$ |
-| RPN stage 2 | 5 × Conv2D(128, 3), first stride 2 | $128 \times 100 \times 88$ |
-| RPN stage 3 | 5 × Conv2D(256, 3), first stride 2 | $256 \times 50 \times 44$ |
-| Upsample + concat | DeConv2D(128, 3, $s$), $s = 1, 2, 4$ | $384 \times 200 \times 176$ |
-| Heads | three $1 \times 1$ convs | class, box (7 per anchor), direction |
+| Input | points in the detection range → *the raw measurement* | $n \times 4$ $(x, y, z, r)$ |
+| Voxelization | hash-table grouping (as in VoxelNet) → *index only the non-empty voxels* | 5k–8k non-empty voxels |
+| VFE(32), VFE(128), Linear(128) | voxel feature extractor → *one learned feature per voxel* | $128$ per voxel |
+| Sparse tensor | voxel features + their integer coordinates, no zeros stored → *the input format of sparse convolutions* | $128 \times 10 \times 400 \times 352$ (sparse) |
+| Sparse middle extractor | 2 phases: submanifold convs + one sparse conv with stride $(2,1,1)$ → *3D context at a fraction of the dense cost* | $64 \times 2 \times 400 \times 352$ |
+| To dense, reshape | fill the empty cells with zeros, merge height into channels → *a BEV map for the 2D RPN* | $128 \times 400 \times 352$ |
+| RPN stage 1 | 3 × Conv2D(128, 3), first stride 2 → *fine BEV features* | $128 \times 200 \times 176$ |
+| RPN stage 2 | 5 × Conv2D(128, 3), first stride 2 → *larger receptive field* | $128 \times 100 \times 88$ |
+| RPN stage 3 | 5 × Conv2D(256, 3), first stride 2 → *largest receptive field, scene context* | $256 \times 50 \times 44$ |
+| Upsample + concat | DeConv2D(128, 3, $s$), $s = 1, 2, 4$ → *combine detail and context at one resolution* | $384 \times 200 \times 176$ |
+| Heads | three $1 \times 1$ convs → *per anchor: class, 7 box residuals, and a direction bit for the sine loss's ±π ambiguity* | class, box (7 per anchor), direction |
 
 RPN spatial sizes follow from the stated strides.
 **Small model:** VFE(32), VFE(64), range $[-3, 1] \times [-32, 32] \times [0, 52.8]$ m → $128 \times 10 \times 320 \times 264$.

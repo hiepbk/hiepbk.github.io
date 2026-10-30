@@ -4,7 +4,7 @@ category: object-detection
 order: 6
 summary: "What if a detector never builds a grid at all? PointRCNN segments the foreground points of a raw LiDAR scan, grows a 3D proposal from each of them, and refines every proposal in its own canonical frame — a two-stage detector on a PointNet++ backbone."
 date: 2026-10-30
-draft: true
+draft: false
 paper:
   title: "PointRCNN: 3D Object Proposal Generation and Detection from Point Cloud"
   authors: "Shaoshuai Shi, Xiaogang Wang, Hongsheng Li"
@@ -114,17 +114,17 @@ $$
 
 ### Tensor shapes
 
-| Stage | Operation | Shape |
+| Stage | Operation → purpose | Shape |
 |---|---|---|
-| Input | raw scene points, randomly sampled | $16384$ points |
-| SA 1–4 (MSG) | sample and group | $4096 \to 1024 \to 256 \to 64$ points |
-| FP 1–4 | interpolate back up | $16384 \times C$ (per-point features) |
-| Stage-1 heads | foreground mask + bin-based box | one score and one box per point |
-| NMS | oriented BEV NMS | 300 (train) / 100 (test) proposals |
-| Region pooling | points in the enlarged box, random sample | $512$ points per proposal |
-| Canonical transform | rotate + translate into the box frame, add depth | $512$ points per proposal |
-| Stage-2 SA (SSG) | sample and group | $128 \to 32 \to 1$ |
-| Stage-2 heads | confidence + box refinement | one score and one box per proposal |
+| Input | raw scene points, randomly sampled → *a fixed number of points per scene* | $16384$ points |
+| SA 1–4 (MSG) | sample and group at several radii → *fewer points, each with wider context* | $4096 \to 1024 \to 256 \to 64$ points |
+| FP 1–4 | interpolate back up → *a rich feature for every input point* | $16384 \times C$ (per-point features) |
+| Stage-1 heads | foreground mask + bin-based box → *every foreground point proposes a box, no anchors* | one score and one box per point |
+| NMS | oriented BEV NMS → *a few good, non-overlapping proposals* | 300 (train) / 100 (test) proposals |
+| Region pooling | points in the enlarged box, random sample → *the points (and features) that describe each proposal, plus a little context* | $512$ points per proposal |
+| Canonical transform | rotate + translate into the box frame, add depth → *the same car looks the same wherever it is; depth keeps the distance cue* | $512$ points per proposal |
+| Stage-2 SA (SSG) | sample and group → *encode each proposal's points into one vector* | $128 \to 32 \to 1$ |
+| Stage-2 heads | confidence + box refinement → *score and correct each proposal* | one score and one box per proposal |
 
 - The paper does not state the backbone channel width $C$, so it stays a symbol here.
 

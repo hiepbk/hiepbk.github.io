@@ -4,7 +4,7 @@ category: object-detection
 order: 9
 summary: "Do we really need raw points to refine a box? Voxel R-CNN pools RoI features straight from the sparse 3D voxel volumes, with a voxel query in place of the ball query — PV-RCNN accuracy at about three times the speed."
 date: 2026-10-30
-draft: true
+draft: false
 paper:
   title: "Voxel R-CNN: Towards High Performance Voxel-based 3D Object Detection"
   authors: "Jiajun Deng, Shaoshuai Shi, Peiwei Li, Wengang Zhou, Yanyong Zhang, Houqiang Li"
@@ -108,15 +108,15 @@ $$
 
 ### Tensor shapes (KITTI)
 
-| Stage | Operation | Shape |
+| Stage | Operation → purpose | Shape |
 |---|---|---|
-| Input range | X $[0, 70.4]$ m, Y $[-40, 40]$ m, Z $[-3, 1]$ m | raw points |
-| Voxel grid | voxel size $(0.05, 0.05, 0.1)$ m | $1408 \times 1600 \times 40$ (range ÷ voxel size) |
-| 3D backbone | four sparse-conv stages | 16, 32, 48, 64 channels |
-| 2D backbone | stack along Z into BEV; block 1 (same X–Y resolution as 3D output), block 2 (half) | 5 conv layers each; 64, 128 channels |
-| RPN | NMS IoU 0.7 | top 100 proposals |
-| Voxel RoI pooling | grid per proposal; query distances 2 and 4 | $6 \times 6 \times 6 = 216$ grid points; 32 channels per aggregation |
-| Detect head | shared 2-layer MLP, two branches | box residual + IoU score per proposal |
+| Input range | X $[0, 70.4]$ m, Y $[-40, 40]$ m, Z $[-3, 1]$ m → *the region that is voxelized* | raw points |
+| Voxel grid | voxel size $(0.05, 0.05, 0.1)$ m → *fine voxels for the sparse CNN* | $1408 \times 1600 \times 40$ (range ÷ voxel size) |
+| 3D backbone | four sparse-conv stages → *multi-scale 3D voxel features, kept for the second stage* | 16, 32, 48, 64 channels |
+| 2D backbone | stack along Z into BEV; block 1 (same X–Y resolution as 3D output), block 2 (half) → *BEV features for the proposals* | 5 conv layers each; 64, 128 channels |
+| RPN | anchor-based BEV head, NMS IoU 0.7 → *high-recall proposals* | top 100 proposals |
+| Voxel RoI pooling | grid per proposal; query distances 2 and 4 → *box features straight from the 3D voxels, no raw points* | $6 \times 6 \times 6 = 216$ grid points; 32 channels per aggregation |
+| Detect head | shared 2-layer MLP, two branches → *a refined box and an IoU-aware score* | box residual + IoU score per proposal |
 
 - Waymo: range $[-75.2, 75.2]$ m in X and Y, $[-2, 4]$ m in Z; voxel size $(0.1, 0.1, 0.15)$ m; 2D channels
   (128, 256); aggregation output 64 channels.

@@ -4,7 +4,7 @@ category: object-detection
 order: 2
 summary: "Before detectors learned on raw points, MV3D turned the LiDAR scan into bird's-eye and front-view images, proposed 3D boxes with a 2D CNN and fused them with the camera — the image-style baseline every later LiDAR detector had to beat."
 date: 2026-10-30
-draft: true
+draft: false
 paper:
   title: "Multi-View 3D Object Detection Network for Autonomous Driving"
   authors: "Xiaozhi Chen, Huimin Ma, Ji Wan, Bo Li, Tian Xia"
@@ -91,17 +91,17 @@ $$
 
 Input sizes on KITTI (Section 3.4):
 
-| Stage | Operation | Size |
+| Stage | Operation → purpose | Size |
 |---|---|---|
-| Point cloud | crop to $[0, 70.4] \times [-40, 40]$ m, keep points inside the image | — |
-| BEV input | 0.1 m grid; $M$ height maps + density + intensity | $704 \times 800 \times (M + 2)$ |
-| FV input | cylindrical projection; height, distance, intensity | $64 \times 512 \times 3$ |
-| RGB input | up-scaled so the shortest side is 500 | — |
-| Backbone (per view) | VGG-16, channels halved, 4th pool removed | $8\times$ downsampled |
-| Proposal feature map | $2\times$ bilinear upsampling | $4\times$ downsampled ($176 \times 200$) |
-| 3D proposals | objectness + box regression on BEV anchors, NMS at BEV IoU 0.7 | 2000 (train) / 300 (test) boxes |
-| ROI pooling | project each proposal into BEV / FV / RGB, ROI-pool (after $4\times$/$4\times$/$2\times$ upsampling) | one fixed-length feature per view |
-| Deep fusion | fc6, fc7, fc8, element-wise mean after each layer | class + 24-D box |
+| Point cloud | crop to $[0, 70.4] \times [-40, 40]$ m, keep points inside the image → *the region all three views cover* | — |
+| BEV input | 0.1 m grid; $M$ height maps + density + intensity → *a compact top view where cars do not overlap* | $704 \times 800 \times (M + 2)$ |
+| FV input | cylindrical projection; height, distance, intensity → *a dense LiDAR view aligned with the camera* | $64 \times 512 \times 3$ |
+| RGB input | up-scaled so the shortest side is 500 → *dense appearance for small and distant objects* | — |
+| Backbone (per view) | VGG-16, channels halved, 4th pool removed → *image features for each view, still fine enough for cars* | $8\times$ downsampled |
+| Proposal feature map | $2\times$ bilinear upsampling → *small objects span enough cells for anchors* | $4\times$ downsampled ($176 \times 200$) |
+| 3D proposals | objectness + box regression on BEV anchors, NMS at BEV IoU 0.7 → *candidate 3D boxes from the clearest view* | 2000 (train) / 300 (test) boxes |
+| ROI pooling | project each proposal into BEV / FV / RGB, ROI-pool (after $4\times$/$4\times$/$2\times$ upsampling) → *a fixed-length feature of the same box in every view* | one fixed-length feature per view |
+| Deep fusion | fc6, fc7, fc8, element-wise mean after each layer → *the views exchange information at every layer; class and 3D box* | class + 24-D box |
 
 ### Bird's-eye view and front-view encoding
 

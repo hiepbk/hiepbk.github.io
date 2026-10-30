@@ -453,6 +453,7 @@ a.pub:hover .pub-title { color: var(--accent); }
 .note-body pre code { background: none; padding: 0; }
 .note-body table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto; font-size: 0.93rem; }
 .note-body th, .note-body td { border: 1px solid var(--border); padding: 8px 12px; }
+.note-body td .katex { white-space: nowrap; } /* keep tensor shapes like 10 × 400 × 352 on one line */
 .note-body th { background: var(--surface-2); }
 .note-body .katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
 
